@@ -16,7 +16,8 @@ Revision history:
 #else
 #include <unistd.h>
 #include <arpa/inet.h>
-#ifndef PLATFORM_PSVITA
+#if !defined(PLATFORM_PSVITA) && !defined(__PSP__)
+// The PSP SDK ships every other BSD sockets header, but not these two.
 #include <net/if.h>
 #include <sys/ioctl.h>
 #endif

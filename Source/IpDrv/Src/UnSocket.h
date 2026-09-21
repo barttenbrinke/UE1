@@ -34,13 +34,17 @@ typedef char* LPSTR;
 #define WSAHOST_NOT_FOUND HOST_NOT_FOUND
 #define WSANO_DATA NO_ADDRESS
 #define closesocket close
-#ifdef PLATFORM_PSVITA
+#if defined(PLATFORM_PSVITA) || defined(__PSP__)
 // this is only used for FIONBIO
 #define ioctlsocket( fd, opt, arg ) setsockopt( (fd), SOL_SOCKET, SO_NONBLOCK, (const void*)(arg), sizeof(*(arg)) )
 #else
 #define ioctlsocket ioctl
 #endif
 #define WSAGetLastError() errno
+#ifndef INADDR_NONE
+// newlib on PSP does not define this.
+#define INADDR_NONE ((unsigned long)0xffffffff)
+#endif
 #define IPBYTE(A, N) ((BYTE*)&A.s_addr)[N-1]
 #endif
 

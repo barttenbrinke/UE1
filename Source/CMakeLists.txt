@@ -26,11 +26,11 @@ option(BUILD_WINDRV "Build WinDrv" OFF)
 option(BUILD_STATIC "Link everything into a single binary" OFF)
 option(BUILD_IPDRV "Build IpDrv (networking / multiplayer)" ON)
 
-if(PSP)
-  # IpDrv wants BSD sockets headers (net/if.h) that the PSP SDK does not ship.
-  # Single player does not need it.
-  set(BUILD_IPDRV OFF)
-endif()
+# NOTE: IpDrv is REQUIRED even for single player -- Entry.unr (the menu map)
+# imports it, so without it the engine dies with "Can't find file 'Entry'"
+# right after the intro. The PSP SDK provides every BSD sockets header except
+# net/if.h and sys/ioctl.h, which are guarded the same way the Vita port
+# guards them.
 
 if(VITA OR PSP)
   # Neither console can load UE1's modules as shared libraries, so everything
