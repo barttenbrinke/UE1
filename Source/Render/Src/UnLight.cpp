@@ -700,6 +700,29 @@ void FLightManager::Merge( FTextureInfo& Tex, BYTE Effect, INT Key, FLightInfo* 
 
 	UBOOL FXDetect = ( (Effect==LE_TorchWaver) || (Effect==LE_FireWaver) || (Effect==LE_WateryShimmer) );
 
+#ifdef __PSP__
+	// These "waver" effects cost a float multiply, a random lookup and a floor
+	// PER LIGHTMAP TEXEL, every frame, for every surface the light touches.
+	// Torches (LE_TorchWaver) are the biggest single cost in the game on PSP --
+	// getting past them visibly speeds everything up -- and the effect only
+	// varies brightness by +-5%, which is close to imperceptible.
+	//
+	// Off by default here. Re-enable in Unreal.ini if you want the flicker:
+	//   [PSP]
+	//   LightFX=1
+	{
+		static INT PspLightFX = -1;
+		if( PspLightFX < 0 )
+		{
+			PspLightFX = 0;
+			GetConfigInt( "PSP", "LightFX", PspLightFX );
+			debugf( NAME_Log, "PSPPERF: light waver effects = %s", PspLightFX ? "on" : "off" );
+		}
+		if( !PspLightFX )
+			FXDetect = 0;
+	}
+#endif
+
 	Src    += Info->MinV * Tex.UClamp;
 	Dest   += Info->MinV * Tex.USize;
 	Stream += Info->MinV * Tex.USize;
@@ -1892,7 +1915,33 @@ void FLightManager::SetupForSurf
 		{
 			// Cache it.
 			Stream = (DWORD*)GCache.Get( LightMap.CacheID, *TopItemToUnlock++ );
+#ifdef __PSP__
+			// The stock test is exact equality with CurrentTime, so a dynamic
+			// lightmap is only reused when the same surface is drawn twice in
+			// one frame -- across frames it is always rebuilt AND re-uploaded
+			// (TF_RealtimeChanged is set on the rebuild path below).
+			//
+			// Torch-lit rooms are where this hurts: measured, dropping the
+			// lightmap work entirely pins the intro at the 20fps cap, while
+			// with it the same scenes fall to 12-14fps.
+			//
+			// Reuse the cached lightmap for a short window instead. Dynamic
+			// lighting then updates at a fixed rate rather than every frame.
+			//   [PSP]
+			//   LightMapHz=10    ; 0 = rebuild every frame (stock behaviour)
+			static DOUBLE PspLightMapPeriod = -1.0;
+			if( PspLightMapPeriod < 0.0 )
+			{
+				INT Hz = 10;
+				GetConfigInt( "PSP", "LightMapHz", Hz );
+				PspLightMapPeriod = ( Hz > 0 ) ? ( 1.0 / (DOUBLE)Hz ) : 0.0;
+				debugf( NAME_Log, "PSPPERF: dynamic lightmap rate = %d Hz", Hz );
+			}
+			const DOUBLE PspAge = Stream ? ( Frame->Viewport->CurrentTime - *(DOUBLE*)Stream ) : 0.0;
+			if( !Stream || PspAge < 0.0 || PspAge >= PspLightMapPeriod )
+#else
 			if( !Stream || *(DOUBLE*)Stream!=Frame->Viewport->CurrentTime )
+#endif
 			{
 				if( !Stream )
 					Stream = (DWORD*)GCache.Create( LightMap.CacheID, TopItemToUnlock[-1], (LightMap.USize*LightMap.VClamp + 3) * sizeof(DWORD), DEFAULT_ALIGNMENT, LightMap.USize*(LightMap.VSize-LightMap.VClamp) );

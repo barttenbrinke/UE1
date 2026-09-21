@@ -176,7 +176,15 @@ CORE_API void VARARGS appThrowf( const char* Fmt, ... );
 //
 // Normal timing.
 //
-#ifdef __vita__
+// On PSP appCycles() resolves to SDL_GetPerformanceCounter() (the PLATFORM_SDL
+// branch), i.e. a kernel time call. There are 162 uclock/uunclock sites, 56 of
+// them in Render and 62 in Engine, many inside per-surface and per-polygon
+// loops -- so the instrumentation itself is on the hot path. The Vita port
+// disables them for the same reason.
+//
+// Define PSP_KEEP_UCLOCK to get the counters back for profiling; the PSPPERF
+// breakdown lines in NOpenGLDrv depend on them.
+#if defined(__vita__) || ( defined(__PSP__) && !defined(PSP_KEEP_UCLOCK) )
 #define uclock(Timer)
 #define uunclock(Timer)
 #else

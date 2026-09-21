@@ -22,3 +22,18 @@ target_link_libraries(${PROJECT_NAME} ${OPENAL_LIBRARY} ${LIBXMP_LIBRARY})
 target_link_libraries(${PROJECT_NAME} Engine Core)
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOPENALDRV_EXPORTS UPACKAGE_NAME=${PROJECT_NAME})
+
+if(PSP)
+  # PSP's OpenAL implements the EFX entry points but the SDK ships no efx.h /
+  # efx-presets.h, so the reverb paths are compiled out. Plain positional audio
+  # and music still work.
+  target_compile_definitions(${PROJECT_NAME} PRIVATE PSP_NO_EFX)
+
+  # Silence the music (sound effects still play). Handy when you are working
+  # alongside the emulator:  cmake -DPSP_NO_MUSIC=ON ...
+  option(PSP_NO_MUSIC "Disable music playback on PSP" OFF)
+  if(PSP_NO_MUSIC)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PSP_NO_MUSIC)
+    message(STATUS "PSP: music disabled")
+  endif()
+endif()

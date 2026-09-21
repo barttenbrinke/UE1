@@ -130,8 +130,36 @@ void UTexture::Tick( FLOAT DeltaSeconds )
 		ConstantTimeTick();
 	}
 
+	FLOAT EffectiveMaxFrameRate = MaxFrameRate;
+
+#ifdef __PSP__
+	// Procedural textures -- Unreal's torch fire above all -- default to
+	// MaxFrameRate 0, which means ConstantTimeTick() regenerates them on the
+	// CPU every single frame. That generation is the dominant cost on PSP:
+	// walking past the torches visibly speeds the whole game up.
+	//
+	// The engine already has a rate limiter right here; it is simply never
+	// used. Give realtime textures a default cap so fire animates at a fixed
+	// modest rate instead of as fast as the renderer will go. Tunable in
+	// Unreal.ini:
+	//   [PSP]
+	//   TextureMaxFPS=8     ; 0 restores the original every-frame behaviour
+	{
+		static FLOAT PspTextureMaxFPS = -1.f;
+		if( PspTextureMaxFPS < 0.f )
+		{
+			INT Configured = 8;
+			GetConfigInt( "PSP", "TextureMaxFPS", Configured );
+			PspTextureMaxFPS = (FLOAT)Configured;
+			debugf( NAME_Log, "PSPPERF: realtime texture cap = %d fps", Configured );
+		}
+		if( EffectiveMaxFrameRate == 0.f && PspTextureMaxFPS > 0.f )
+			EffectiveMaxFrameRate = PspTextureMaxFPS;
+	}
+#endif
+
 	// Update.
-	if( MaxFrameRate == 0.0 )
+	if( EffectiveMaxFrameRate == 0.0 )
 	{
 		// Constant update.
 		ConstantTimeTick();
@@ -139,7 +167,7 @@ void UTexture::Tick( FLOAT DeltaSeconds )
 	else
 	{
 		// Catch up.
-		FLOAT MinTime  = 1.f/Clamp(MaxFrameRate,0.01f,100.0f);
+		FLOAT MinTime  = 1.f/Clamp(EffectiveMaxFrameRate,0.01f,100.0f);
 		FLOAT MaxTime  = 1.f/Clamp(MinFrameRate,0.01f,100.0f);
 		Accumulator   += DeltaSeconds;
 		if( Accumulator < MinTime )

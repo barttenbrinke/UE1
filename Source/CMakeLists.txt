@@ -24,8 +24,17 @@ option(BUILD_NULLSOUNDDRV "Build SoundDrv (Null driver)" ON)
 option(BUILD_NOPENALDRV "Build NOpenALDrv" ON)
 option(BUILD_WINDRV "Build WinDrv" OFF)
 option(BUILD_STATIC "Link everything into a single binary" OFF)
+option(BUILD_IPDRV "Build IpDrv (networking / multiplayer)" ON)
 
-if(VITA)
+if(PSP)
+  # IpDrv wants BSD sockets headers (net/if.h) that the PSP SDK does not ship.
+  # Single player does not need it.
+  set(BUILD_IPDRV OFF)
+endif()
+
+if(VITA OR PSP)
+  # Neither console can load UE1's modules as shared libraries, so everything
+  # has to be linked into a single binary.
   set(BUILD_STATIC ON)
 endif()
 
@@ -134,6 +143,11 @@ else()
   add_definitions(-DPLATFORM_POSIX)
   if(VITA)
     add_definitions(-DPLATFORM_PSVITA)
+  elseif(PSP)
+    add_definitions(-DPLATFORM_PSP)
+    # The Memory Stick is FAT, so the filesystem is case-INsensitive. Leaving
+    # PLATFORM_CASE_SENSITIVE_FS set here would be wrong on its own terms, and
+    # it also drags in strcasestr(), which newlib does not provide.
   else()
     add_definitions(-DPLATFORM_CASE_SENSITIVE_FS)
     set(CMAKE_EXECUTABLE_SUFFIX ".bin")
@@ -164,6 +178,23 @@ else()
   endif()
   add_compile_options(-ffunction-sections -fno-strict-aliasing)
   add_compile_options(-Wno-write-strings)
+
+  if(PSP)
+    # The PSP FPU is SINGLE PRECISION ONLY (__mips_single_float). Every double
+    # operation is a soft-float call into __adddf3/__muldf3/__divdf3, and UE1 is
+    # full of unsuffixed literals in float expressions ("0.95 + 0.05 * x"),
+    # each of which forces a float -> double -> float round trip through those
+    # routines in the hottest loops in the renderer.
+    #
+    # -fsingle-precision-constant makes those literals float, keeping the math
+    # on the hardware FPU. Measured: worst-case frame 99ms -> 70ms, with the
+    # renderer's occlusion pass alone dropping 3012ms -> 1622ms per 100 frames.
+    add_compile_options(-fsingle-precision-constant)
+
+    # Measured and rejected: -O3 and -ffast-math made no difference at all
+    # (70/54/50/51 ms vs 70/55/50/51 ms). Not worth -ffast-math's risk of
+    # subtle float behaviour changes, so we stay on -O2 with IEEE semantics.
+  endif()
 endif()
 
 # Dependencies
@@ -220,14 +251,19 @@ endif()
 
 # Subprojects
 
-set(INSTALL_TARGETS Core Engine Render IpDrv Fire Unreal)
+set(INSTALL_TARGETS Core Engine Render Fire Unreal)
+if(BUILD_IPDRV)
+  list(APPEND INSTALL_TARGETS IpDrv)
+endif()
 
 set(CMAKE_SHARED_LIBRARY_PREFIX "")
 
 add_subdirectory(Core)
 add_subdirectory(Engine)
 add_subdirectory(Render)
-add_subdirectory(IpDrv)
+if(BUILD_IPDRV)
+  add_subdirectory(IpDrv)
+endif()
 add_subdirectory(Fire)
 
 if(USE_SDL)

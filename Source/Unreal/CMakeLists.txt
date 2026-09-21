@@ -78,7 +78,33 @@ if(VITA)
   )
 endif()
 
+if(PSP)
+  # Mirrors `psp-pkg-config --libs sdl2`, plus GLU and the C++/pthread runtime.
+  # SDL2 #defines main -> SDL_main, so SDL2main must be linked to supply the
+  # real entry point, and it has to come before SDL2. libGL (Mesa-derived)
+  # provides both the GL 1.x fixed pipeline and the EGL symbols SDL2 needs.
+  target_link_libraries(${PROJECT_NAME}
+    -Wl,--whole-archive pthread -Wl,--no-whole-archive
+    SDL2main SDL2
+    GLU GL
+    openal xmp
+    pspvram pspaudio pspaudiolib pspvfpu pspdisplay pspgu pspge
+    psphprm pspctrl psppower psprtc
+    stdc++ m
+  )
+endif()
+
 target_compile_definitions(${PROJECT_NAME} PRIVATE UNREAL_EXPORTS UPACKAGE_NAME=${PROJECT_NAME})
+
+if(PSP)
+  # create_pbp_file passes MEMSIZE=1, which claims the extra RAM present on the
+  # PSP-2000 and later. Unreal will need it.
+  create_pbp_file(
+    TARGET ${PROJECT_NAME}
+    TITLE "Unreal"
+    VERSION 01.00
+  )
+endif()
 
 if(VITA)
   vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE)

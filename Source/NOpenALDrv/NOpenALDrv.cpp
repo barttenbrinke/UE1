@@ -4,8 +4,10 @@
 #include "AL/al.h"
 #include "AL/alc.h"
 #include "AL/alext.h"
+#ifndef PSP_NO_EFX  // PSP OpenAL implements EFX but ships no efx.h header
 #include "AL/efx.h"
 #include "AL/efx-presets.h"
+#endif
 #include "xmp.h"
 
 #include "NOpenALDrvPrivate.h"
@@ -78,11 +80,20 @@ UBOOL UNOpenALAudioSubsystem::Init()
 	if( MusicInterpolation > XMP_INTERP_SPLINE )
 		MusicInterpolation = XMP_INTERP_SPLINE;
 
+#ifdef PSP_NO_EFX
+	// PSP's alext.h has no ALC_SOFT_HRTF, and HRTF is meaningless on the
+	// hardware's stereo output regardless.
+	const ALint AttrList[] = {
+		ALC_FREQUENCY, OutputRate,
+		0
+	};
+#else
 	const ALint AttrList[] = {
 		ALC_FREQUENCY, OutputRate,
 		ALC_SOFT_HRTF, UseHRTF,
 		0
 	};
+#endif
 
 	Ctx = alcCreateContext( Device, AttrList );
 	if( !Ctx )
@@ -97,7 +108,9 @@ UBOOL UNOpenALAudioSubsystem::Init()
 
 	alDistanceModel( AL_LINEAR_DISTANCE_CLAMPED );
 	alDopplerFactor( Max( 0.f, DopplerFactor ) );
-	alListenerf( AL_METERS_PER_UNIT, DISTANCE_SCALE );
+#ifndef PSP_NO_EFX
+	alListenerf( AL_METERS_PER_UNIT, DISTANCE_SCALE );   // EFX listener property
+#endif
 	alListenerf( AL_GAIN, MasterVolume / 255.f );
 
 	alGenSources( MAX_SOURCES, Sources );
@@ -118,10 +131,12 @@ UBOOL UNOpenALAudioSubsystem::Init()
 
 	if( UseReverb )
 	{
+#ifndef PSP_NO_EFX  // reverb effect + slot creation
 		alGenEffects( 1, &ReverbEffect );
 		InitReverbEffect();
 		alGenAuxiliaryEffectSlots( 1, &ReverbSlot );
 		alAuxiliaryEffectSloti( ReverbSlot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL );
+#endif
 		ReverbOn = false;
 	}
 
@@ -161,8 +176,10 @@ void UNOpenALAudioSubsystem::Destroy()
 
 	if (UseReverb)
 	{
+#ifndef PSP_NO_EFX  // reverb teardown (Destroy)
 		alDeleteAuxiliaryEffectSlots(1, &ReverbSlot);
 		alDeleteEffects(1, &ReverbEffect);
+#endif
 	}
 
 	if( Ctx )
@@ -209,8 +226,10 @@ void UNOpenALAudioSubsystem::ShutdownAfterError()
 	}
 	if (UseReverb)
 	{
+#ifndef PSP_NO_EFX  // reverb teardown (ShutdownAfterError)
 		alDeleteAuxiliaryEffectSlots(1, &ReverbSlot);
 		alDeleteEffects(1, &ReverbEffect);
+#endif
 	}
 	if( Ctx )
 	{
@@ -470,7 +489,9 @@ void UNOpenALAudioSubsystem::UpdateVoice( INT Num, const ENVoiceOp Op )
 	}
 
 	if( UseReverb && Op == NVOP_Play )
+#ifndef PSP_NO_EFX  // per-source reverb send
 		alSource3i( Source, AL_AUXILIARY_SEND_FILTER, (ALint)ReverbSlot, 0, AL_FILTER_NULL );
+#endif
 
 	// Play or stop if needed.
 	switch( Op )
@@ -597,6 +618,9 @@ void UNOpenALAudioSubsystem::StopVoice( INT Num )
 
 void UNOpenALAudioSubsystem::PlayMusic()
 {
+#ifdef PSP_NO_MUSIC
+	return;   // built with -DPSP_NO_MUSIC=ON
+#endif
 	guard(UNOpenALAudioSubsystem::PlayMusic)
 
 	FScopedLock Lock( MusicMutex );
@@ -755,7 +779,7 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 	// Update music.
 	DOUBLE DeltaTime = appSeconds() - MusicTime;
 	MusicTime += DeltaTime;
-	DeltaTime = Clamp( DeltaTime, 0.0, 1.0 );
+	DeltaTime = Clamp( DeltaTime, (DOUBLE)0.0, (DOUBLE)1.0 );
 	if( Viewport->Actor && Viewport->Actor->Transition != MTRAN_None )
 	{
 		// Track is changing.
@@ -829,6 +853,9 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 
 void UNOpenALAudioSubsystem::UpdateMusicBuffers()
 {
+#ifdef PSP_NO_MUSIC
+	return;   // built with -DPSP_NO_MUSIC=ON
+#endif
 	guard(UNOpenALAudioSubsystem::UpdateMusicBuffers)
 
 	FScopedLock Lock( MusicMutex );
@@ -893,6 +920,11 @@ void UNOpenALAudioSubsystem::ClearMusicBuffers()
 
 void UNOpenALAudioSubsystem::UpdateReverb( FPointRegion& Region )
 {
+#ifdef PSP_NO_EFX
+	// No efx.h on PSP, so reverb is compiled out entirely. Positional audio
+	// and music are unaffected.
+	(void)Region;
+#else
 	guard(UNOpenALAudioSubsystem::UpdateReverb)
 
 	const UBOOL bNewReverb = ( Viewport->Actor && Viewport->Actor->Region.Zone && Viewport->Actor->Region.Zone->bReverbZone );
@@ -925,12 +957,14 @@ void UNOpenALAudioSubsystem::UpdateReverb( FPointRegion& Region )
 	}
 
 	unguard;
+#endif
 }
 
 void UNOpenALAudioSubsystem::InitReverbEffect()
 {
 	guard(UNOpenALAudioSubsystem::InitReverbEffect)
 
+#ifndef PSP_NO_EFX  // reverb parameter block
 	EFXEAXREVERBPROPERTIES Reverb = EFX_REVERB_PRESET_GENERIC;
 	alEffecti( ReverbEffect, AL_EFFECT_TYPE, AL_EFFECT_EAXREVERB );
 	alEffectf( ReverbEffect, AL_EAXREVERB_DENSITY, Reverb.flDensity );
@@ -956,6 +990,7 @@ void UNOpenALAudioSubsystem::InitReverbEffect()
 	alEffectf( ReverbEffect, AL_EAXREVERB_LFREFERENCE, Reverb.flLFReference );
 	alEffectf( ReverbEffect, AL_EAXREVERB_ROOM_ROLLOFF_FACTOR, Reverb.flRoomRolloffFactor );
 	alEffecti( ReverbEffect, AL_EAXREVERB_DECAY_HFLIMIT, Reverb.iDecayHFLimit );
+#endif
 
 	unguard;
 }

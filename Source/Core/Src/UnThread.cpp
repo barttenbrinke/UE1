@@ -43,7 +43,11 @@ CORE_API UTHREAD appThreadSpawn( THREAD_FUNC Func, void* Arg, const char* Name, 
 	}
 	else
 	{
+#ifndef __PSP__
+		// newlib's pthread layer has no pthread_setname_np. It only labels the
+		// thread for debuggers, so dropping it costs nothing at runtime.
 		pthread_setname_np( *Thread, Name );
+#endif
 		if( OutThreadId )
 			*OutThreadId = ++ThreadId;
 	}

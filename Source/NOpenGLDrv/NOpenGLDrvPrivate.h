@@ -2,7 +2,12 @@
 	Dependencies.
 ------------------------------------------------------------------------------------*/
 
+#ifdef __PSP__
+// pspgl is linked statically, so glad's runtime loader cannot work here.
+#include "glad_psp.h"
+#else
 #include "glad.h"
+#endif
 #include "RenderPrivate.h"
 
 /*------------------------------------------------------------------------------------

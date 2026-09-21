@@ -7,6 +7,11 @@
 #include <vitaGL.h>
 #include <unistd.h>
 #endif
+#ifdef __PSP__
+#include <pspkernel.h>
+#include <psppower.h>
+#include <unistd.h>
+#endif
 
 #include "Engine.h"
 
@@ -127,6 +132,63 @@ static void PlatformPreInit()
 	vglInitWithCustomThreshold( 0, 960, 544, VGL_MEM_THRESHOLD, 0, 0, 0, SCE_GXM_MULTISAMPLE_4X );
 }
 
+#elif defined(__PSP__)
+
+//
+// PSP-specific globals.
+//
+
+#define MAX_PATH 1024
+
+// UE1's renderer recurses deeply, and FOutputDevice::Logf drops a 4KB TempStr
+// buffer on the stack at the bottom of that recursion. The PSP's default main
+// thread stack is nowhere near enough -- it manifests as "CPU Jump to 00000000"
+// with the PC inside Logf. The Vita port raises its stack for the same reason.
+// Declared extern "C" so the name is not mangled; pspsdk looks it up by symbol.
+extern "C" { unsigned int sce_newlib_stack_kb_size = 1024; }
+
+// sce_newlib_heap_kb_size is a weak symbol in the SDK, so without this we get
+// whatever pspsdk's default is rather than an explicit choice. A negative value
+// means "all available memory except this many KB", leaving a little for the
+// allocations pspgl and the kernel make outside the newlib heap.
+// Negative means "all available memory except this many KB", leaving a little
+// for allocations pspgl and the kernel make outside the newlib heap.
+//
+// MEASURED: this yields heap 23.6MB + kernel free 0.76MB = ~24.4MB total, which
+// is a 32MB machine's user partition -- the PSP-2000's extra 32MB is NOT being
+// granted despite MEMSIZE=1 in PARAM.SFO. Unreal exhausts this and dies in
+// appMalloc's check(Ptr). Getting the extra RAM is the main open problem.
+extern "C" { int sce_newlib_heap_kb_size = -1024; }
+
+// The engine expects to run from inside System/, exactly as Unreal.exe does on
+// PC -- Unreal.ini's search paths are written relative to it ("..\System\*.u",
+// "..\Maps\*.unr"). Pointing this at the game root instead makes every package
+// lookup miss and InitEngine() fail in LoadClass. The Vita build does the same
+// thing via its SYSTEM_PATH ending in "/System/".
+#define SYSTEM_PATH "PSP/GAME/Unreal/System/"
+static char GRootPath[MAX_PATH] = "ms0:/" SYSTEM_PATH;
+
+[[noreturn]] static void PspEarlyError( const char* Msg )
+{
+	fprintf( stderr, "FATAL ERROR: %s\n", Msg );
+	SDL_ShowSimpleMessageBox( SDL_MESSAGEBOX_ERROR, "Fatal Error", Msg, nullptr );
+	sceKernelExitGame();
+	abort();
+}
+
+void PlatformPreInit()
+{
+	// The PSP starts homebrew at full speed only if asked; the default is
+	// 222MHz, and Unreal needs every cycle available.
+	scePowerSetClockFrequency( 333, 333, 166 );
+
+	// The working directory at launch is not guaranteed to be the EBOOT's own
+	// directory, so pin it explicitly before the engine starts resolving
+	// relative paths like "System/Unreal.ini".
+	if ( chdir( GRootPath ) < 0 )
+		PspEarlyError( "Could not chdir to the Unreal directory" );
+}
+
 #else
 
 void PlatformPreInit()
@@ -210,11 +272,44 @@ void MainLoop( UEngine* Engine )
 	{
 		// Update the world.
 		DOUBLE NewTime = appSeconds();
+#ifdef __PSP__
+		// TEMPORARY DIAGNOSTIC -- if these keep printing while Lock() has
+		// stopped, the main loop is alive but nothing is being drawn. If they
+		// stop too, the loop itself is blocked inside Tick().
+		{
+			static INT TickCount = 0;
+			if( TickCount < 3 || ( TickCount % 10 ) == 0 )
+				debugf( NAME_Log, "PSPDIAG: Tick #%d dt=%f", TickCount, (FLOAT)(NewTime - OldTime) );
+			++TickCount;
+		}
+#endif
 		Engine->Tick( NewTime - OldTime );
 		OldTime = NewTime;
 
 		// Enforce optional maximum tick rate.
 		INT MaxTickRate = Engine->GetMaxTickRate();
+#ifdef __PSP__
+		// UGameEngine::GetMaxTickRate() returns 0 in single player -- it only
+		// caps for network games -- so the limiter below never runs. Frame
+		// times here swing between ~37ms and ~200ms, which reads as very uneven
+		// even though the fast stretches are fine. Capping trades the peaks for
+		// a steadier rate and, just as importantly, gives the simulation a
+		// consistent DeltaSeconds.
+		//
+		// Note this cannot speed up the slow stretches; it only stops the fast
+		// ones running away. Set [PSP] MaxFPS=0 in Unreal.ini to disable.
+		{
+			static INT PspMaxFPS = -1;
+			if( PspMaxFPS < 0 )
+			{
+				PspMaxFPS = 20;
+				GetConfigInt( "PSP", "MaxFPS", PspMaxFPS );
+				debugf( NAME_Log, "PSPPERF: frame cap = %d fps", PspMaxFPS );
+			}
+			if( PspMaxFPS > 0 )
+				MaxTickRate = PspMaxFPS;
+		}
+#endif
 		if( MaxTickRate )
 		{
 			DOUBLE Delta = (1.0/MaxTickRate) - (appSeconds()-OldTime);
@@ -245,6 +340,12 @@ void ExitEngine( UEngine* Engine )
 
 #ifdef PLATFORM_WIN32
 INT WINAPI WinMain( HINSTANCE hInInstance, HINSTANCE hPrevInstance, char* InCmdLine, INT nCmdShow )
+#elif defined(__PSP__)
+// On PSP the entry point goes through SDL2main, where SDL_main.h does
+// `#define main SDL_main` and declares `extern "C" int SDL_main(int, char*[])`.
+// Declaring const char** here would define a differently-mangled symbol that
+// SDL2main's own main() cannot find, so match SDL's signature exactly.
+int main( int argc, char** argv )
 #else
 int main( int argc, const char** argv )
 #endif
@@ -254,7 +355,7 @@ int main( int argc, const char** argv )
 #else
 	hInstance = NULL;
 	// Remember arguments since we don't have GetCommandLine().
-	appSetCmdLine( argc, argv );
+	appSetCmdLine( argc, (const char**)argv );
 	PlatformPreInit();
 #endif
 

@@ -134,15 +134,29 @@ typedef int16_t  SWORD;  // 16-bit signed.
 typedef int64_t  SQWORD; // 64-bit signed.
 
 // Other base types.
+#ifdef __PSP__
+// psp-gcc's newlib spells int32_t as 'long int' rather than 'int'. Both are 32
+// bits, but they are distinct types to C++ overload resolution, so leaving
+// these as int32_t makes declarations stop matching their own definitions
+// (TArray<T>::Remove, FMemCache::Exit, FMemStack::GetByteCount, every Clamp()
+// call...). Spell them out as plain int, as they resolve on x86 and ARM.
+typedef int      UBOOL;  // Boolean 0 (false) or 1 (true).
+#else
 typedef int32_t  UBOOL;  // Boolean 0 (false) or 1 (true).
+#endif
 typedef double   DOUBLE; // 64-bit IEEE double.
 
 #ifndef PLATFORM_WIN32 // On Windows these are defined in minwindef.h.
 // Unsigned base types.
 typedef uint8_t  BYTE;   // 8-bit  unsigned.
+#ifdef __PSP__
+typedef unsigned int DWORD; // 32-bit unsigned. See the UBOOL note above.
+typedef int          INT;   // 32-bit signed.
+#else
 typedef uint32_t DWORD;  // 32-bit unsigned.
 // Signed base types.
 typedef int32_t  INT;    // 32-bit signed.
+#endif
 typedef int64_t __int64; // 64-bit signed.
 // Other base types.
 typedef float    FLOAT;  // 32-bit IEEE floating point.

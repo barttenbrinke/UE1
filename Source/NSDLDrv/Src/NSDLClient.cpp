@@ -69,8 +69,28 @@ void UNSDLClient::Init( UEngine* InEngine )
 
 	atexit( SDL_Quit );
 
+	// SDL exposes the PSP's buttons via SDL_PSP_JoystickDriver, but
+	// SDL_GameControllerOpen only succeeds when a controller *mapping* exists
+	// for that joystick's GUID. Report what is actually present.
+	{
+		const int NumJoy = SDL_NumJoysticks();
+		debugf( NAME_Log, "PSPDIAG: SDL_NumJoysticks = %d", NumJoy );
+		for( int i = 0; i < NumJoy; ++i )
+		{
+			char GuidStr[64] = {0};
+			SDL_JoystickGUID Guid = SDL_JoystickGetDeviceGUID( i );
+			SDL_JoystickGetGUIDString( Guid, GuidStr, sizeof(GuidStr) );
+			const char* JoyName = SDL_JoystickNameForIndex( i );
+			debugf( NAME_Log, "PSPDIAG: joy %d name='%s' guid=%s isGameController=%d",
+				i, JoyName ? JoyName : "(null)", GuidStr, (int)SDL_IsGameController( i ) );
+		}
+	}
+
 	if( SDL_NumJoysticks() > 0 )
 		Controller = SDL_GameControllerOpen( 0 );
+
+	debugf( NAME_Log, "PSPDIAG: SDL_GameControllerOpen -> %s %s",
+		Controller ? "OK" : "FAILED", Controller ? "" : SDL_GetError() );
 
 	SDL_GameControllerEventState( SDL_ENABLE );
 

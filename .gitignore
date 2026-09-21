@@ -4,3 +4,11 @@ Bin
 *.log
 Source/.vs
 Source/UnrealED/obj
+
+# PSP port
+build-psp/
+psptest/build/
+.DS_Store
+
+# Retail game data - copyrighted, never commit this
+GAME_ASSETS/
