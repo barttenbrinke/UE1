@@ -45,6 +45,10 @@ UBOOL InitSockets( char* Error256 )
 		}
 		else appSprintf( Error256, "WSAStartup failed (%s)", SocketError(Code) ); 
 	}
+#elif defined(__PSP__)
+	// Networking is inert on PSP (see UnSocket.h). Report "not initialised" so
+	// the engine takes its existing no-network path rather than trying.
+	GInitialized = 0;
 #else
 	GInitialized = 1;
 #endif

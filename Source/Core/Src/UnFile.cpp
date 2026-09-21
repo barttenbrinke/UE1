@@ -8,6 +8,12 @@
 
 #include "CorePrivate.h"
 
+#ifdef __PSP__
+#include <pspiofilemgr.h>
+#include <malloc.h>
+extern void PspLogSync();
+#endif
+
 #include <math.h>
 #include <float.h>
 #include <stdarg.h>
@@ -24,6 +30,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <errno.h>
 #endif
 
 /*-----------------------------------------------------------------------------
@@ -369,6 +376,27 @@ CORE_API INT appFSize( const char* fname )
 {
 	guard(appFSize);
 
+#ifdef __PSP__
+	// Do NOT open the file just to measure it.
+	//
+	// The PSP's sceIo layer allows far fewer concurrent handles than a desktop
+	// OS, and by the time the engine is resolving package files it already has
+	// Core.u, Engine.u, Render.u, the map and all its imports, plus the log,
+	// open at once. appFopen() then returns NULL, appFSize reports -1, and
+	// appFindPackageFile concludes the file is missing -- which surfaced on
+	// hardware as "Can't find file 'Entry'" immediately after Entry.unr and its
+	// imports had loaded perfectly well. PPSSPP never reproduced it because
+	// host file descriptors are plentiful there.
+	//
+	// stat() goes through sceIoGetstat and costs no handle at all.
+	struct stat PspSt;
+	// stat rather than open: the PSP cannot stat or fopen a file the process
+	// already holds open, and it fails with errno unset when that happens.
+	if( stat( fname, &PspSt ) != 0 )
+		return -1;
+	return (INT)PspSt.st_size;
+#else
+
 	FILE* f;
 	long result;
 
@@ -384,6 +412,7 @@ CORE_API INT appFSize( const char* fname )
 	result = ftell( f );
 	fclose( f );
 	return result;
+#endif
 	unguard;
 }
 
@@ -533,9 +562,190 @@ CORE_API TArray<FString> appFindFiles( const char* Spec )
 //
 // Standard file functions.
 //
+#ifdef __PSP__
+
+//
+// newlib's stdio is not usable for the package files on real hardware. Once
+// several packages are open at once, fopen stops returning -- although both
+// halves of its job still work at that moment, as sceIoOpen returns a valid
+// handle for the very same path and fopen of a different file still succeeds.
+// PPSSPP never reproduces it, because it implements the sceIo syscalls rather
+// than newlib's stdio on top of them.
+//
+// So the appF* family runs straight on sceIo here, with its own handle. The
+// FILE* in the signatures is only ever passed back to these functions, never
+// to stdio, so an opaque pointer into this table is enough. Going through
+// fdopen instead does NOT work: newlib validates the descriptor with
+// _fcntl_r(fd,F_GETFL), which is a stub on pspdev, so it returns NULL for
+// every file.
+//
+// sceIoRead is a syscall into the Memory Stick driver and UE1 deserializes a
+// few bytes at a time, so reads have to be buffered here or loading crawls --
+// this is the one thing newlib's stdio was actually doing for us.
+// The Memory Stick driver will not hand out an unlimited number of open
+// handles -- on hardware the tenth sceIoOpen never returns at all (it does not
+// fail, it hangs, which is why the console just goes black). UE1 holds every
+// linker's file open for the linker's lifetime, so it sails past that.
+//
+// Since this layer already tracks the logical position itself, a kernel handle
+// is just a cache: it can be closed behind UE1's back and reopened on the next
+// access, seeking back to where it was. So keep at most
+// PSP_MAX_KERNEL_HANDLES real handles alive and evict the least recently used.
+enum
+{
+	PSP_MAX_FILES          = 32,
+	PSP_FILE_BUFSZ         = 16384,
+	PSP_MAX_KERNEL_HANDLES = 6,
+};
+struct FPspFile
+{
+	UBOOL	InUse;			// slot is logically open, even if Fd is closed
+	SceUID	Fd;				// kernel handle, or -1 when evicted/closed
+	INT		Flags;			// sceIoOpen flags, to reopen after eviction
+	char	Path[256];		// ditto
+	INT		Error;			// sticky, for appFerror
+	INT		FilePos;		// logical position, what appFtell reports
+	INT		KernelPos;		// where the kernel handle actually sits
+	INT		LastUse;		// for LRU eviction
+	BYTE*	Buffer;			// read window, allocated on first buffered read
+	INT		BufBase;		// file offset of Buffer[0]
+	INT		BufLen;			// valid bytes in Buffer
+};
+
+// Move the kernel handle only when it is not already in the right place.
+static INT PspSeekTo( FPspFile* Slot, INT Offset )
+{
+	if( Slot->KernelPos == Offset )
+		return 0;
+	if( sceIoLseek32( Slot->Fd, Offset, PSP_SEEK_SET ) < 0 )
+	{
+		Slot->Error = 1;
+		return -1;
+	}
+	Slot->KernelPos = Offset;
+	return 0;
+}
+static FPspFile GPspFiles[PSP_MAX_FILES];
+static UBOOL GPspFilesInit = 0;
+static INT GPspUseTick = 0;
+
+static FPspFile* PspFileAlloc()
+{
+	if( !GPspFilesInit )
+	{
+		for( INT i=0; i<PSP_MAX_FILES; i++ )
+		{
+			GPspFiles[i].InUse = 0;
+			GPspFiles[i].Fd    = -1;
+		}
+		GPspFilesInit = 1;
+	}
+	for( INT i=0; i<PSP_MAX_FILES; i++ )
+		if( !GPspFiles[i].InUse )
+			return &GPspFiles[i];
+	return NULL;
+}
+
+static INT PspLiveHandles()
+{
+	INT Live = 0;
+	for( INT i=0; i<PSP_MAX_FILES; i++ )
+		if( GPspFiles[i].InUse && GPspFiles[i].Fd >= 0 )
+			Live++;
+	return Live;
+}
+
+// Give up the kernel handle of whichever open file has gone longest untouched.
+static void PspEvictOne()
+{
+	FPspFile* Victim = NULL;
+	for( INT i=0; i<PSP_MAX_FILES; i++ )
+		if( GPspFiles[i].InUse && GPspFiles[i].Fd >= 0 )
+			if( !Victim || GPspFiles[i].LastUse < Victim->LastUse )
+				Victim = &GPspFiles[i];
+	if( Victim )
+	{
+		sceIoClose( Victim->Fd );
+		Victim->Fd = -1;
+	}
+}
+
+// Make sure this slot has a live kernel handle, reopening and re-seeking if it
+// was evicted. The read window survives eviction untouched, so a file that is
+// being read sequentially usually needs no reopen at all.
+static INT PspEnsureOpen( FPspFile* Slot )
+{
+	Slot->LastUse = ++GPspUseTick;
+	if( Slot->Fd >= 0 )
+		return 0;
+
+	INT Live = PspLiveHandles();
+	while( Live-- >= PSP_MAX_KERNEL_HANDLES )
+		PspEvictOne();
+
+	// Reopening must not truncate a file we are partway through.
+	INT ReopenFlags = Slot->Flags & ~(PSP_O_TRUNC|PSP_O_CREAT);
+	Slot->Fd = sceIoOpen( Slot->Path, ReopenFlags, 0777 );
+
+	if( Slot->Fd < 0 )
+	{
+		Slot->Error = 1;
+		return -1;
+	}
+	Slot->KernelPos = 0;
+	return 0;
+}
+
+#define PSPFILE(Stream) ((FPspFile*)(Stream))
+
+#endif
+
 CORE_API FILE* appFopen( const char* Path, const char* Mode )
 {
+#ifdef __PSP__
+	int PspFlags;
+	if( Mode[0] == 'w' )      PspFlags = PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC;
+	else if( Mode[0] == 'a' ) PspFlags = PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND;
+	else                      PspFlags = PSP_O_RDONLY;
+	if( strchr( Mode, '+' ) )
+		PspFlags = ( PspFlags & ~(PSP_O_RDONLY|PSP_O_WRONLY) ) | PSP_O_RDWR;
+
+	FPspFile* Slot = PspFileAlloc();
+	if( !Slot )
+		return NULL;
+
+	INT Live = PspLiveHandles();
+	while( Live-- >= PSP_MAX_KERNEL_HANDLES )
+		PspEvictOne();
+
+	SceUID Fd = sceIoOpen( Path, PspFlags, 0777 );
+	if( Fd < 0 )
+		return NULL;
+
+	// Publish the handle BEFORE anything that can log: debugf writes the log
+	// through this same layer, which may evict a handle, and a slot that is
+	// InUse with a stale Fd would make this new handle invisible to that
+	// accounting.
+	appStrncpy( Slot->Path, Path, ARRAY_COUNT(Slot->Path) );
+	Slot->Fd        = Fd;
+	Slot->InUse     = 1;
+	Slot->Flags     = PspFlags;
+	Slot->LastUse   = ++GPspUseTick;
+	Slot->Error     = 0;
+	Slot->Buffer    = NULL;
+	Slot->BufBase   = 0;
+	Slot->BufLen    = 0;
+	Slot->FilePos   = 0;
+	Slot->KernelPos = 0;
+	if( PspFlags & PSP_O_APPEND )
+	{
+		INT End = (INT)sceIoLseek32( Fd, 0, PSP_SEEK_END );
+		Slot->FilePos = Slot->KernelPos = End < 0 ? 0 : End;
+	}
+	return (FILE*)Slot;
+#else
 	FILE* F = fopen( Path, Mode );
+#endif
 
 #ifdef PLATFORM_CASE_SENSITIVE_FS
 	if( F ) return F;
@@ -590,23 +800,98 @@ CORE_API FILE* appFopen( const char* Path, const char* Mode )
 	closedir( Dir );
 #endif
 
+#ifndef __PSP__
 	return F;
+#endif
 }
 CORE_API INT appFclose( FILE* Stream )
 {
+#ifdef __PSP__
+	FPspFile* Slot = PSPFILE(Stream);
+	if( !Slot || !Slot->InUse )
+		return -1;
+	if( Slot->Fd >= 0 )
+		sceIoClose( Slot->Fd );
+	Slot->Fd    = -1;
+	Slot->InUse = 0;
+	if( Slot->Buffer )
+	{
+		free( Slot->Buffer );
+		Slot->Buffer = NULL;
+	}
+	Slot->BufLen = 0;
+	return 0;
+#else
 	return fclose(Stream);
+#endif
 }
 CORE_API INT appFseek( FILE* Stream, INT Offset, INT Origin )
 {
+#ifdef __PSP__
+	FPspFile* Slot = PSPFILE(Stream);
+	// Seeking only moves the logical position; the read window often still
+	// covers the new spot, which is what makes UE1's back-and-forth
+	// deserialization affordable.
+	INT NewPos;
+	if( Origin == SEEK_CUR )
+		NewPos = Slot->FilePos + Offset;
+	else if( Origin == SEEK_END )
+	{
+		if( PspEnsureOpen( Slot ) < 0 )
+			return -1;
+		INT End = (INT)sceIoLseek32( Slot->Fd, 0, PSP_SEEK_END );
+		if( End < 0 )
+		{
+			Slot->Error = 1;
+			return -1;
+		}
+		Slot->KernelPos = End;
+		NewPos = End + Offset;
+	}
+	else
+		NewPos = Offset;
+	if( NewPos < 0 )
+	{
+		Slot->Error = 1;
+		return -1;		// fseek reports failure as non-zero
+	}
+	Slot->FilePos = NewPos;
+	return 0;
+#else
 	return fseek(Stream,Offset,Origin);
+#endif
 }
 CORE_API INT appFtell( FILE* Stream )
 {
+#ifdef __PSP__
+	return PSPFILE(Stream)->FilePos;
+#else
 	return ftell(Stream);
+#endif
 }
 CORE_API INT appFwrite( const void* Buffer, INT Size, INT Count, FILE* Stream )
 {
+#ifdef __PSP__
+	FPspFile* Slot = PSPFILE(Stream);
+	if( Size <= 0 || Count <= 0 )
+		return 0;
+	// Writes go straight through: they are the log and the ini, where being
+	// durable matters more than being fast. Any read window is now stale.
+	Slot->BufLen = 0;
+	if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
+		return 0;
+	int Wrote = sceIoWrite( Slot->Fd, Buffer, Size*Count );
+	if( Wrote < 0 )
+	{
+		Slot->Error = 1;
+		return 0;
+	}
+	Slot->FilePos   += Wrote;
+	Slot->KernelPos += Wrote;
+	return Wrote / Size;	// fwrite returns a count of items, not bytes
+#else
 	return fwrite(Buffer,Size,Count,Stream);
+#endif
 }
 CORE_API INT appUnlink( const char* Filename )
 {
@@ -614,11 +899,85 @@ CORE_API INT appUnlink( const char* Filename )
 }
 CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 {
+#ifdef __PSP__
+	FPspFile* Slot = PSPFILE(Stream);
+	if( Size <= 0 || Count <= 0 )
+		return 0;
+
+	INT   Want = Size * Count;
+	BYTE* Out  = (BYTE*)Buffer;
+	INT   Got  = 0;
+
+	while( Want > 0 )
+	{
+		// Serve whatever the current window covers.
+		if( Slot->BufLen > 0
+		&&  Slot->FilePos >= Slot->BufBase
+		&&  Slot->FilePos <  Slot->BufBase + Slot->BufLen )
+		{
+			INT Avail = Slot->BufBase + Slot->BufLen - Slot->FilePos;
+			INT N     = Avail < Want ? Avail : Want;
+			appMemcpy( Out, Slot->Buffer + (Slot->FilePos - Slot->BufBase), N );
+			Out += N; Slot->FilePos += N; Want -= N; Got += N;
+			continue;
+		}
+
+		// sceIoRead DMAs into the destination and the PSP's data cache is not
+		// coherent with that, so the driver only gets pointers we control:
+		// a 64-byte aligned buffer of our own, or a caller buffer that happens
+		// to be 64-byte aligned already. Everything else is staged through the
+		// window. newlib's fread did this implicitly via its own aligned
+		// buffer; reading straight into live object memory is what broke it.
+		// PPSSPP cannot show this up -- it implements sceIoRead as a memcpy.
+		const UBOOL bOutAligned = ( ( (size_t)Out & 63 ) == 0 );
+		if( ( Want >= PSP_FILE_BUFSZ && bOutAligned ) || !Slot->Buffer )
+		{
+			if( !Slot->Buffer )
+			{
+				Slot->Buffer = (BYTE*)memalign( 64, PSP_FILE_BUFSZ );
+				if( Slot->Buffer )
+					continue;	// allocated; go round and fill it
+			}
+			if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
+				break;
+			int N = sceIoRead( Slot->Fd, Out, Want );
+			if( N <= 0 )
+			{
+				if( N < 0 )
+					Slot->Error = 1;
+				break;
+			}
+			Out += N; Slot->FilePos += N; Slot->KernelPos += N; Want -= N; Got += N;
+			continue;
+		}
+
+		// Refill the window at the current position.
+		if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
+			break;
+		int N = sceIoRead( Slot->Fd, Slot->Buffer, PSP_FILE_BUFSZ );
+		if( N <= 0 )
+		{
+			if( N < 0 )
+				Slot->Error = 1;
+			Slot->BufLen = 0;
+			break;
+		}
+		Slot->BufBase    = Slot->FilePos;
+		Slot->BufLen     = N;
+		Slot->KernelPos += N;
+	}
+	return Got / Size;
+#else
 	return fread(Buffer,Size,Count,Stream);
+#endif
 }
 CORE_API INT appFerror( FILE* F )
 {
+#ifdef __PSP__
+	return PSPFILE(F)->Error;
+#else
 	return ferror(F);
+#endif
 }
 CORE_API INT appMkdir( const char* Dirname )
 {

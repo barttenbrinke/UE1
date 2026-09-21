@@ -46,7 +46,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <malloc.h>
 #include <stdio.h>
 #include <float.h>
 #include <time.h>
@@ -64,6 +63,23 @@
 CORE_API FGlobalPlatform GTempPlatform;
 INT GSlowTaskCount=0;
 FILE* GLogFile=NULL;
+#ifdef __PSP__
+#include <pspiofilemgr.h>
+#include <malloc.h>
+// The Memory Stick driver keeps its own write-back cache, so an unbuffered
+// FILE* is not enough: on a hard crash the tail of the log can still be lost,
+// which makes "the last line in the log" an unreliable place to put the fault.
+// PspLogSync forces it out to the card. Only the crash-hunt traces call it --
+// it costs a real device sync.
+void PspLogSync()
+{
+	// appFwrite goes straight to sceIoWrite, so there is no stdio buffer left
+	// to flush -- only the Memory Stick driver's own write-back cache, which
+	// would otherwise swallow the tail of the log on a hard crash.
+	sceIoSync( "ms0:", 0 );
+}
+
+#endif
 char GLogFname[256]="";
 
 /*-----------------------------------------------------------------------------
@@ -341,7 +357,9 @@ void appOpenLog( const char* Fname )
 	GLogFile = appFopen( GLogFname, "w+t" );
 	if( GLogFile )
 	{
+#ifndef __PSP__
 		setvbuf( GLogFile, 0, _IONBF, 4096 );
+#endif
 		char Time[32], Date[32], Message[256];
 		appSprintf( Message, "Log file open, %s %s", _strdate(Date), _strtime(Time) );
 		debugf( NAME_Log, Message );
@@ -849,6 +867,49 @@ void appLaunchURL( const char* URL, const char* Parms, char* Error256 )
 //
 // Find a file.
 //
+
+#ifdef __PSP__
+//
+// Resolved-package cache.
+//
+// The PSP cannot stat() or fopen() a file that this process already has open:
+// the call fails WITHOUT setting errno (genuine misses set ENOENT=2). UE1
+// re-verifies a package's existence in GetPackageLinker even when its linker
+// already holds the file open, so the second lookup for e.g. Entry.unr fails
+// on a file it read successfully moments earlier -- reported to the user as
+// "Can't find file 'Entry'". PPSSPP never reproduces it because host file
+// descriptors behave normally.
+//
+// Remember what we have already resolved and answer from memory.
+//
+struct FPspResolved
+{
+	char In[64];
+	char Out[256];
+};
+static FPspResolved GPspResolved[128];
+static INT GPspResolvedNum = 0;
+
+static const char* PspResolvedLookup( const char* In )
+{
+	for( INT i = 0; i < GPspResolvedNum; i++ )
+		if( stricmp( GPspResolved[i].In, In ) == 0 )
+			return GPspResolved[i].Out;
+	return NULL;
+}
+
+static void PspResolvedAdd( const char* In, const char* Out )
+{
+	if( GPspResolvedNum >= 128 || PspResolvedLookup( In ) )
+		return;
+	if( strlen( In ) >= sizeof(GPspResolved[0].In) || strlen( Out ) >= sizeof(GPspResolved[0].Out) )
+		return;
+	strcpy( GPspResolved[GPspResolvedNum].In,  In  );
+	strcpy( GPspResolved[GPspResolvedNum].Out, Out );
+	++GPspResolvedNum;
+}
+#endif
+
 UBOOL appFindPackageFile( const char* In, const FGuid* Guid, char* Out )
 {
 	guard(appFindPackageFile);
@@ -857,10 +918,26 @@ UBOOL appFindPackageFile( const char* In, const FGuid* Guid, char* Out )
 	if( strlen(In)>4 && stricmp( In + strlen(In) - (sizeof(DLLEXT)-1), DLLEXT )==0 )
 		return 0;
 
+#ifdef __PSP__
+	{
+		const char* Cached = PspResolvedLookup( In );
+		if( Cached )
+		{
+			strcpy( Out, Cached );
+			return 1;
+		}
+	}
+#endif
+
 	// Try file as specified.
 	strcpy( Out, In );
 	if( appFSize( Out ) >= 0 )
+	{
+#ifdef __PSP__
+		PspResolvedAdd( In, Out );
+#endif
 		return 1;
+	}
 
 	// Try all of the predefined paths.
 	for( DWORD i=0; i<ARRAY_COUNT(GSys->Paths)+(Guid!=NULL); i++ )
@@ -903,10 +980,16 @@ UBOOL appFindPackageFile( const char* In, const FGuid* Guid, char* Out )
 				// Update cache access time.
 				_utime( Out, NULL );
 			}
+#ifdef __PSP__
+			PspResolvedAdd( In, Out );
+#endif
 			return 1;
 		}
 	}
 
+#ifdef __PSP__
+	debugf( "PSPFIND: NOT FOUND '%s'", In );
+#endif
 	// Not found.
 	return 0;
 	unguard;
@@ -1059,10 +1142,20 @@ void FGlobalPlatform::WriteBinary( const void* Data, INT Length, EName Event )
 #endif
 			if( GLogFile )
 			{
-				fwrite( *EventName, strlen(*EventName), 1, GLogFile );
-				fwrite( ": ", 2, 1, GLogFile );
-				fwrite( Data, strlen((char*)Data), 1, GLogFile );
-				fwrite( "\n", 1, 1, GLogFile );
+				appFwrite( *EventName, strlen(*EventName), 1, GLogFile );
+				appFwrite( ": ", 2, 1, GLogFile );
+				appFwrite( Data, strlen((char*)Data), 1, GLogFile );
+				appFwrite( "\n", 1, 1, GLogFile );
+#ifdef __PSP__
+				// Flush every line. A kernel fault reboots the console
+				// instantly, taking the buffered tail of the log with it --
+				// and that tail is exactly the part that says what went wrong.
+				// Costs a Memory Stick write per line, which is a fair trade
+				// while the port is still crashing on hardware.
+#ifndef __PSP__
+				fflush( GLogFile );
+#endif
+#endif
 			}
 			if( GLogHook )
 			{

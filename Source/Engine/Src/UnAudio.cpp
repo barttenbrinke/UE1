@@ -232,6 +232,28 @@ void FWaveModInfo::ByteSwapWave( TArray<BYTE>& WavData )
 //
 //	Figure out the WAVE file layout.
 //
+//
+// RIFF chunks are only 16-bit padded (see Pad16Bit), so walking them lands on
+// merely-even addresses and reading ChunkID/ChunkLen as a DWORD is an
+// unaligned load. On x86 that is legal; on MIPS gcc emits LW and the PSP
+// raises an address error, which without PSPLink is a silent hard crash.
+// Confirmed on hardware: lw $a1,0($v1) with v1=0x0958EA8A, inside this
+// function, reached from UNOpenALAudioSubsystem::RegisterSound.
+//
+#ifdef __PSP__
+	static inline DWORD PspReadDWord( const void* P )
+	{
+		DWORD V;
+		appMemcpy( &V, P, sizeof(V) );
+		return V;
+	}
+	#define RIFF_ID(C)  PspReadDWord( &(C)->ChunkID  )
+	#define RIFF_LEN(C) PspReadDWord( &(C)->ChunkLen )
+#else
+	#define RIFF_ID(C)  ((C)->ChunkID)
+	#define RIFF_LEN(C) ((C)->ChunkLen)
+#endif
+
 UBOOL FWaveModInfo::ReadWaveInfo( TArray<BYTE>& WavData )
 {
 	guard(FWaveModInfo::ReadWaveInfo);
@@ -258,13 +280,13 @@ UBOOL FWaveModInfo::ReadWaveInfo( TArray<BYTE>& WavData )
 
 	FRiffChunk* RiffChunk = (FRiffChunk*)&WavData(3*4);
 	// Look for the 'fmt ' chunk.
-	while( ( ((BYTE*)RiffChunk + 8) < WaveDataEnd)  && ( RiffChunk->ChunkID != mmioFOURCC('f','m','t',' ') ) )
+	while( ( ((BYTE*)RiffChunk + 8) < WaveDataEnd)  && ( RIFF_ID(RiffChunk) != mmioFOURCC('f','m','t',' ') ) )
 	{
 		// Go to next chunk.
-		RiffChunk = (FRiffChunk*) ( (BYTE*)RiffChunk + Pad16Bit(RiffChunk->ChunkLen) + 8); 
+		RiffChunk = (FRiffChunk*) ( (BYTE*)RiffChunk + Pad16Bit(RIFF_LEN(RiffChunk)) + 8); 
 	}
 	// Chunk found ?
-	if( RiffChunk->ChunkID != mmioFOURCC('f','m','t',' ') )
+	if( RIFF_ID(RiffChunk) != mmioFOURCC('f','m','t',' ') )
 		return 0;
 
 	FmtChunk = (FFormatChunk*)((BYTE*)RiffChunk + 8);
@@ -277,18 +299,18 @@ UBOOL FWaveModInfo::ReadWaveInfo( TArray<BYTE>& WavData )
 	// re-initalize the RiffChunk pointer
 	RiffChunk = (FRiffChunk*)&WavData(3*4);
 	// Look for the 'data' chunk.
-	while( ( ((BYTE*)RiffChunk + 8) < WaveDataEnd) && ( RiffChunk->ChunkID != mmioFOURCC('d','a','t','a') ) )
+	while( ( ((BYTE*)RiffChunk + 8) < WaveDataEnd) && ( RIFF_ID(RiffChunk) != mmioFOURCC('d','a','t','a') ) )
 	{
 		// Go to next chunk.
-		RiffChunk = (FRiffChunk*) ( (BYTE*)RiffChunk + Pad16Bit(RiffChunk->ChunkLen) + 8); 
+		RiffChunk = (FRiffChunk*) ( (BYTE*)RiffChunk + Pad16Bit(RIFF_LEN(RiffChunk)) + 8); 
 	} 
 	// Chunk found ?
-	if( RiffChunk->ChunkID != mmioFOURCC('d','a','t','a') )
+	if( RIFF_ID(RiffChunk) != mmioFOURCC('d','a','t','a') )
 		return 0;
 
 	SampleDataStart = (BYTE*)RiffChunk + 8;
 	pWaveDataSize   = &RiffChunk->ChunkLen;
-	SampleDataSize  =  RiffChunk->ChunkLen;
+	SampleDataSize  =  RIFF_LEN(RiffChunk);
 	OldBitsPerSample = FmtChunk->wBitsPerSample;
 	SampleDataEnd   =  SampleDataStart+SampleDataSize;
 
@@ -297,15 +319,15 @@ UBOOL FWaveModInfo::ReadWaveInfo( TArray<BYTE>& WavData )
 	// Re-initalize the RiffChunk pointer
 	RiffChunk = (FRiffChunk*)&WavData(3*4);
 	// Look for a 'smpl' chunk.
-	while( ( (((BYTE*)RiffChunk) + 8) < WaveDataEnd) && ( RiffChunk->ChunkID != mmioFOURCC('s','m','p','l') ) )
+	while( ( (((BYTE*)RiffChunk) + 8) < WaveDataEnd) && ( RIFF_ID(RiffChunk) != mmioFOURCC('s','m','p','l') ) )
 	{
 		// Go to next chunk.
-		RiffChunk = (FRiffChunk*) ( (BYTE*)RiffChunk + Pad16Bit(RiffChunk->ChunkLen) + 8); 
+		RiffChunk = (FRiffChunk*) ( (BYTE*)RiffChunk + Pad16Bit(RIFF_LEN(RiffChunk)) + 8); 
 	} 
 
 	// Chunk found ? smpl chunk is optional.
 	// Find the first sample-loop structure, and the total number of them.
-	if( (BYTE*)RiffChunk+8<WaveDataEnd && RiffChunk->ChunkID == mmioFOURCC('s','m','p','l') )
+	if( (BYTE*)RiffChunk+8<WaveDataEnd && RIFF_ID(RiffChunk) == mmioFOURCC('s','m','p','l') )
 	{
 		FSampleChunk* pSampleChunk =  (FSampleChunk*)( (BYTE*)RiffChunk + 8);
 		SampleLoopsNum  = pSampleChunk->cSampleLoops; // Number of tSampleLoop structures.

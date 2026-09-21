@@ -11,6 +11,13 @@
 #include <pspkernel.h>
 #include <psppower.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pspsdk.h>
+#include <psputils.h>
+#include <exception>
+#include <new>
+extern void PspLogSync();
 #endif
 
 #include "Engine.h"
@@ -145,7 +152,12 @@ static void PlatformPreInit()
 // thread stack is nowhere near enough -- it manifests as "CPU Jump to 00000000"
 // with the PC inside Logf. The Vita port raises its stack for the same reason.
 // Declared extern "C" so the name is not mangled; pspsdk looks it up by symbol.
-extern "C" { unsigned int sce_newlib_stack_kb_size = 1024; }
+// 4MB. Package loading recurses: Entry -> UnrealI -> IpDrv, each level a large
+// ULinkerLoad constructor, and FOutputDevice::Logf puts a 4KB buffer on the
+// stack at every level. Hardware dies at UnrealI's import 324 of 722
+// ('ClientBeaconReceiver'), which is exactly where the nested IpDrv load
+// begins. 1MB was not enough.
+extern "C" { unsigned int sce_newlib_stack_kb_size = 4096; }
 
 // sce_newlib_heap_kb_size is a weak symbol in the SDK, so without this we get
 // whatever pspsdk's default is rather than an explicit choice. A negative value
@@ -168,6 +180,12 @@ extern "C" { int sce_newlib_heap_kb_size = -1024; }
 #define SYSTEM_PATH "PSP/GAME/Unreal/System/"
 static char GRootPath[MAX_PATH] = "ms0:/" SYSTEM_PATH;
 
+// NOTE: a pspDebugInstallErrorHandler() crash handler was tried here and does
+// NOT work. It pulls in sceKernelRegisterDefaultExceptionHandler and
+// sceKernelRegisterSubIntrHandler, which are kernel-mode only, and a user-mode
+// EBOOT importing them is refused by the loader with 8002013C ("The game could
+// not be started"). Catching MIPS exceptions would need a kernel-mode module.
+
 [[noreturn]] static void PspEarlyError( const char* Msg )
 {
 	fprintf( stderr, "FATAL ERROR: %s\n", Msg );
@@ -176,8 +194,48 @@ static char GRootPath[MAX_PATH] = "ms0:/" SYSTEM_PATH;
 	abort();
 }
 
+//
+// Catch-alls for the ways a PSP process can die without writing anything.
+// pspDebugInstallErrorHandler is not usable here (it imports kernel-mode
+// symbols, so the EBOOT is rejected with 8002013C), which leaves the C++
+// runtime's own exits as the only ones we can still get a line out of:
+//   - an appThrowf the toolchain cannot unwind lands in terminate()
+//   - a failed appMalloc lands in the new-handler
+//   - anything calling exit()/abort() lands in the atexit hook
+// Without these, all three look identical to a hardware fault: black screen.
+//
+static void PspOnTerminate()
+{
+	debugf( "PSPDEATH: std::terminate -- unhandled/unwindable exception" );
+	PspLogSync();
+	sceKernelExitGame();
+}
+
+static void PspOnBadAlloc()
+{
+	debugf( "PSPDEATH: operator new failed (out of memory)" );
+	PspLogSync();
+	sceKernelExitGame();
+}
+
+static void PspOnExit()
+{
+	debugf( "PSPDEATH: exit()/abort() reached" );
+	PspLogSync();
+}
+
 void PlatformPreInit()
 {
+	// UE1 divides by zero and underflows freely -- normalising a zero vector,
+	// dividing by a zero delta -- which is harmless when the FPU quietly
+	// produces inf/NaN. The PSP's FPU traps on inexact/underflow/divide-by-zero
+	// instead, so those become fatal exceptions. Mask them.
+	pspSdkDisableFPUExceptions();
+
+	std::set_terminate( PspOnTerminate );
+	std::set_new_handler( PspOnBadAlloc );
+	atexit( PspOnExit );
+
 	// The PSP starts homebrew at full speed only if asked; the default is
 	// 222MHz, and Unreal needs every cycle available.
 	scePowerSetClockFrequency( 333, 333, 166 );

@@ -231,7 +231,11 @@ BYTE CORE_API GRegisterIntrinsic( int iIntrinsic, void* Func );
 #define P_GET_STRUCT(typ,var)       typ var; {typ *Ptr=&var; Stack.Step( Stack.Object, *(BYTE**)&Ptr ); var=*Ptr;}
 #define P_GET_STRUCT_OPT(typ,var,def) typ var=def; {typ *Ptr=&var; Stack.Step( Stack.Object, *(BYTE**)&Ptr ); var=*Ptr;}
 #define P_GET_STRUCT_REF(typ,var)   typ a##var,*var=&a##var; {Stack.Step( Stack.Object, *(BYTE**)&var );}
+#ifdef __PSP__
+#define P_GET_SKIP_OFFSET(var)      _WORD var; {debug(*Stack.Code==EX_Skip); Stack.Code++; appMemcpy(&var,Stack.Code,sizeof(_WORD)); Stack.Code+=2; }
+#else
 #define P_GET_SKIP_OFFSET(var)      _WORD var; {debug(*Stack.Code==EX_Skip); Stack.Code++; var=*(_WORD*)Stack.Code; Stack.Code+=2; }
+#endif
 #define P_FINISH                    {Stack.Code++;}
 
 //
@@ -272,27 +276,40 @@ inline void FFrame::Step( UObject* Context, BYTE*& Result )
 	(Context->*GIntrinsics[B])( *this, Result );
 	unguardSlow;
 }
+//
+// Bytecode operands sit at whatever byte offset follows their opcode, so on
+// MIPS a plain *(T*)Code is an unaligned load: gcc emits LW and the PSP
+// raises an address error, which is a silent kill with no handler installed.
+// appMemcpy compiles down to the unaligned-safe sequence. See the matching
+// XFER fix in UnClass.cpp -- this is the same bug on the execution path
+// rather than the load path.
+//
+#ifdef __PSP__
+	#define PSP_READ_CODE(T,Var) T Var; appMemcpy( &Var, Code, sizeof(T) )
+#else
+	#define PSP_READ_CODE(T,Var) T Var = *(T*)Code
+#endif
 inline INT FFrame::ReadInt()
 {
-	INT Result = *(INT*)Code;
+	PSP_READ_CODE(INT,Result);
 	Code += sizeof(INT);
 	return Result;
 }
 inline FLOAT FFrame::ReadFloat()
 {
-	FLOAT Result = *(FLOAT*)Code;
+	PSP_READ_CODE(FLOAT,Result);
 	Code += sizeof(FLOAT);
 	return Result;
 }
 inline INT FFrame::ReadWord()
 {
-	INT Result = *(_WORD*)Code;
+	PSP_READ_CODE(_WORD,Result);
 	Code += sizeof(_WORD);
 	return Result;
 }
 inline FName FFrame::ReadName()
 {
-	FName Result = *(FName*)Code;
+	PSP_READ_CODE(FName,Result);
 	Code += sizeof(FName);
 	return Result;
 }

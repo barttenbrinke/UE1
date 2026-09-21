@@ -295,7 +295,14 @@ void UObject::execBoolVariable( FFrame& Stack, BYTE*& Result )
 	// Get bool variable.
 	GBoolAddr = NULL;
 	BYTE B = *Stack.Code++;
+	// Code has just advanced past a 1-byte opcode, so this pointer operand is
+	// guaranteed misaligned. Confirmed on hardware: lw $s0,1($v1).
+#ifdef __PSP__
+	UBoolProperty* Property;
+	appMemcpy( &Property, Stack.Code, sizeof(Property) );
+#else
 	UBoolProperty* Property = *(UBoolProperty**)Stack.Code;
+#endif
 	(this->*GIntrinsics[B])( Stack, *(BYTE**)&GBoolAddr );
 	GProperty = Property;
 
@@ -584,7 +591,12 @@ void UObject::execStructCmpEq( FFrame& Stack, BYTE*& Result )
 	guardSlow(UObject::execStructCmpEq);
 
 	// Get struct.
+#ifdef __PSP__
+	UStruct* Struct;
+	appMemcpy( &Struct, Stack.Code, sizeof(Struct) );
+#else
 	UStruct* Struct = *(UStruct**)Stack.Code;
+#endif
 	Stack.Code += sizeof(UStruct*);
 
 	// Get first expression.
@@ -607,7 +619,12 @@ void UObject::execStructCmpNe( FFrame& Stack, BYTE*& Result )
 	guardSlow(UObject::execStructCmpNe);
 
 	// Get struct.
+#ifdef __PSP__
+	UStruct* Struct;
+	appMemcpy( &Struct, Stack.Code, sizeof(Struct) );
+#else
 	UStruct* Struct = *(UStruct**)Stack.Code;
+#endif
 	Stack.Code += sizeof(UStruct*);
 
 	// Get first expression.

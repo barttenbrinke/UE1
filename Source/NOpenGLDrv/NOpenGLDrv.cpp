@@ -537,6 +537,54 @@ static UBOOL PspEnsureVtxBuffers( INT Pts )
 	return 1;
 }
 
+//
+// pspgl's glInterleavedArrays does not reliably disable the client arrays that
+// a format leaves out: after a T2F_C4UB_V3F draw, GL_COLOR_ARRAY can stay
+// enabled holding a stale pointer, and the next draw then asks the kernel to
+// flush that array's cache range. On hardware that arrives as
+// sceKernelDcacheWritebackInvalidateRange(NULL, 0) and the kernel answers with
+// a syscall exception; PPSSPP ignores the bad range, so it only ever fails on
+// the console. Set (and unset) every array explicitly.
+//
+static UBOOL PspSetArrays( UBOOL bTex, UBOOL bColor, const void* Base, INT Stride )
+{
+	const BYTE* P = (const BYTE*)Base;
+	INT Off = 0;
+
+	// pspgl's __pspgl_cache_arrays walks every *enabled* array and flushes its
+	// cache range, so one stale array with a null pointer takes the process
+	// down. Leave nothing enabled that we are not about to fill, and refuse to
+	// draw at all if our own buffer never got allocated.
+	glDisableClientState( GL_NORMAL_ARRAY );
+	if( !Base )
+	{
+		glDisableClientState( GL_VERTEX_ARRAY );
+		glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+		glDisableClientState( GL_COLOR_ARRAY );
+		return 0;
+	}
+
+	if( bTex )
+	{
+		glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+		glTexCoordPointer( 2, GL_FLOAT, Stride, P );
+		Off += 2 * sizeof(FLOAT);
+	}
+	else glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+
+	if( bColor )
+	{
+		glEnableClientState( GL_COLOR_ARRAY );
+		glColorPointer( 4, GL_UNSIGNED_BYTE, Stride, P + Off );
+		Off += 4;
+	}
+	else glDisableClientState( GL_COLOR_ARRAY );
+
+	glEnableClientState( GL_VERTEX_ARRAY );
+	glVertexPointer( 3, GL_FLOAT, Stride, P + Off );
+	return 1;
+}
+
 // Emit every polygon of the facet for one pass, reusing the cached raw U/V.
 static void PspEmitFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
                           FLOAT UPan, FLOAT VPan, FLOAT UMult, FLOAT VMult )
@@ -545,6 +593,15 @@ static void PspEmitFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 	for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
 	{
 		const INT N = Poly->NumPts;
+		if( N < 3 )
+		{
+			// Degenerate poly: emitting it would hand pspgl a zero-length
+			// vertex array, and it flushes that through
+			// sceKernelDcacheWritebackInvalidateRange( addr, 0 ), which the
+			// kernel rejects with a syscall exception. Harmless in PPSSPP.
+			Base += N;
+			continue;
+		}
 		FLOAT* Out = GPspVtx;
 		for( INT i = 0; i < N; ++i )
 		{
@@ -556,8 +613,8 @@ static void PspEmitFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 			*Out++ = P.Y;
 			*Out++ = P.Z;
 		}
-		glInterleavedArrays( GL_T2F_V3F, 0, GPspVtx );
-		glDrawArrays( GL_TRIANGLE_FAN, 0, N );
+		if( PspSetArrays( 1, 0, GPspVtx, 20 ) )
+			glDrawArrays( GL_TRIANGLE_FAN, 0, N );
 		Base += N;
 	}
 }
@@ -647,6 +704,15 @@ static void PspEmitFacetLit( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 	for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
 	{
 		const INT N = Poly->NumPts;
+		if( N < 3 )
+		{
+			// Degenerate poly: emitting it would hand pspgl a zero-length
+			// vertex array, and it flushes that through
+			// sceKernelDcacheWritebackInvalidateRange( addr, 0 ), which the
+			// kernel rejects with a syscall exception. Harmless in PPSSPP.
+			Base += N;
+			continue;
+		}
 		BYTE* Out = (BYTE*)GPspVtx;
 		for( INT i = 0; i < N; ++i )
 		{
@@ -674,8 +740,8 @@ static void PspEmitFacetLit( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 			V[0] = P.X; V[1] = P.Y; V[2] = P.Z;
 			Out += 24;
 		}
-		glInterleavedArrays( GL_T2F_C4UB_V3F, 0, GPspVtx );
-		glDrawArrays( GL_TRIANGLE_FAN, 0, N );
+		if( PspSetArrays( 1, 1, GPspVtx, 24 ) )
+			glDrawArrays( GL_TRIANGLE_FAN, 0, N );
 		Base += N;
 	}
 }
@@ -792,6 +858,7 @@ void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurf
 
 			glDisableClientState( GL_VERTEX_ARRAY );
 			glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+			glDisableClientState( GL_COLOR_ARRAY );
 			return;
 		}
 		// Allocation failed -- fall through to the portable immediate-mode path.
@@ -914,6 +981,12 @@ static INT   GPspMeshMax = 0;
 
 static UBOOL PspEnsureMeshBuffer( INT Pts )
 {
+	// Refusing degenerate counts here guards both mesh draw paths: a zero-length
+	// vertex array makes pspgl flush a zero-byte cache range, which the kernel
+	// rejects with a syscall exception. Callers fall back to the immediate-mode
+	// path, which handles an empty primitive harmlessly.
+	if( Pts < 3 )
+		return 0;
 	if( Pts > GPspMeshMax )
 	{
 		BYTE* NewBuf = (BYTE*)realloc( GPspMeshBuf, Pts * 24 );
@@ -976,8 +1049,8 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 				V[2] = P->Point.Z;
 				Out += 24;
 			}
-			glInterleavedArrays( GL_T2F_C4UB_V3F, 0, GPspMeshBuf );
-			glDrawArrays( GL_TRIANGLE_FAN, 0, NumPts );
+			if( PspSetArrays( 1, 1, GPspMeshBuf, 24 ) )
+				glDrawArrays( GL_TRIANGLE_FAN, 0, NumPts );
 		}
 		else
 #endif
@@ -1015,8 +1088,8 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 					V[2] = P->Point.Z;
 					Out += 16;
 				}
-				glInterleavedArrays( GL_C4UB_V3F, 0, GPspMeshBuf );
-				glDrawArrays( GL_TRIANGLE_FAN, 0, NumPts );
+				if( PspSetArrays( 0, 1, GPspMeshBuf, 16 ) )
+					glDrawArrays( GL_TRIANGLE_FAN, 0, NumPts );
 			}
 			else
 #endif
@@ -1516,6 +1589,7 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 #endif
 
 	// Upload all mips.
+	INT UploadedMips = 0;
 	uclock(ImageCycles);
 	for( INT MipIndex = 0; MipIndex < Info.NumMips; ++MipIndex )
 	{
@@ -1572,6 +1646,7 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 			glTexImage2D( GL_TEXTURE_2D, MipIndex, InternalFormat, Mip->USize, Mip->VSize, 0, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );
 		else
 			glTexSubImage2D( GL_TEXTURE_2D, MipIndex, 0, 0, Mip->USize, Mip->VSize, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );
+		++UploadedMips;
 #ifdef PSP_CLEAR_TEST
 		// TEMPORARY DIAGNOSTIC -- does pspgl actually accept these uploads?
 		// Geometry renders solid black, so either the texels never arrive or
@@ -1602,6 +1677,15 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 #endif
 	}
 	uunclock(ImageCycles);
+
+#ifdef __PSP__
+	// We stop uploading at 8x8 (pspgl overruns swizzling anything smaller), so
+	// the mip chain is TRUNCATED. Without capping GL_TEXTURE_MAX_LEVEL the
+	// texture is incomplete and therefore unsamplable -- which is why anything
+	// relying on mipmapped sampling came out blank.
+	if( UploadedMips > 0 )
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, UploadedMips - 1 );
+#endif
 
 	unguard;
 }

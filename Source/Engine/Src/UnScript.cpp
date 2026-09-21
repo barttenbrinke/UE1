@@ -198,7 +198,7 @@ AUTOREGISTER_INTRINSIC( AActor, EX_RotationConst, execRotationConst );
 void AActor::execVectorConst( FFrame& Stack, BYTE*& Result )
 {
 	guardSlow(AActor::execVectorConst);
-#ifdef PLATFORM_ARM
+#if defined(PLATFORM_ARM) || defined(__PSP__)
 	// try to avoid potential unaligned accesses
 	appMemcpy( (void*)Result, (void*)Stack.Code, sizeof(FVector) );
 #else
@@ -985,7 +985,7 @@ void AActor::execPollSleep( FFrame& Stack, BYTE*& Result )
 {
 	guardSlow(AActor::execPollSleep);
 
-#ifdef PLATFORM_ARM
+#if defined(PLATFORM_ARM) || defined(__PSP__)
 	// try to avoid potential unaligned accesses
 	FLOAT DeltaSeconds = 0.0f;
 	appMemcpy( (void*)&DeltaSeconds, (void*)Result, sizeof(FLOAT) );

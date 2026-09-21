@@ -97,8 +97,12 @@ void get_ieee_node_identifier( byte* nodeid )
 	static unsigned32 ip32 = 0;
 	unsigned16 random16;
 
-#ifdef PLATFORM_PSVITA
-	// gethostname/gethostbyname are unavailable when WLAN is turned off
+#if defined(PLATFORM_PSVITA) || defined(__PSP__)
+	// gethostname/gethostbyname are unavailable when WLAN is turned off. On PSP
+	// they are worse than unavailable: they reach sceNetInet* through libcglue,
+	// and calling that without bringing the network stack up first is a kernel
+	// fault that reboots the console. (The code below would also null-deref
+	// hinfo if the lookup failed.)
 	ip32 = 0x0100007f; // 127.0.0.1
 #elif !defined(PLATFORM_WIN32)
 	struct hostent *hinfo;
@@ -113,7 +117,7 @@ void get_ieee_node_identifier( byte* nodeid )
 
 	random16 = true_random();
 
-#ifdef PLATFORM_ARM
+#if defined(PLATFORM_ARM) || defined(__PSP__)
 	// avoid unaligned access on ARM
 	memcpy(nodeid + 0, &ip32, sizeof(ip32));
 	memcpy(nodeid + 4, &random16, sizeof(random16));

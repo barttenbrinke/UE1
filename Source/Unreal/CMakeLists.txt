@@ -88,7 +88,6 @@ if(PSP)
     SDL2main SDL2
     GLU GL
     openal xmp
-    pspnet_inet pspnet_resolver pspnet
     pspvram pspaudio pspaudiolib pspvfpu pspdisplay pspgu pspge
     psphprm pspctrl psppower psprtc
     stdc++ m

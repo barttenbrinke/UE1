@@ -1100,7 +1100,28 @@ EExprToken UStruct::SerializeExpr( INT& iCode, FArchive& Ar )
 {
 	EExprToken Expr=(EExprToken)0;
 	guard(SerializeExpr);
+#ifdef __PSP__
+	// Script is a byte array and UnrealScript bytecode is byte-packed -- a
+	// 1-byte opcode followed by 4-byte operands -- so &Script(iCode) is very
+	// often not aligned for T. On x86 an unaligned *(T*) is merely slow, but
+	// on MIPS gcc emits a plain LW/SW and the PSP raises an address error.
+	// With no exception handler installable from user mode that is a silent
+	// hard crash, and PPSSPP never reproduces it. Stage through an aligned
+	// temporary instead.
+	// A DWORD array, not a T: some of the transferred types (FLabelEntry)
+	// have no default constructor, and every type used here needs only
+	// 4-byte alignment.
+	#define XFER(T) \
+	{ \
+		DWORD PspBuf[ (sizeof(T)+sizeof(DWORD)-1)/sizeof(DWORD) ]; \
+		appMemcpy( PspBuf, &Script(iCode), sizeof(T) ); \
+		Ar << *(T*)PspBuf; \
+		appMemcpy( &Script(iCode), PspBuf, sizeof(T) ); \
+		iCode += sizeof(T); \
+	}
+#else
 	#define XFER(T) {Ar << *(T*)&Script(iCode); iCode += sizeof(T); }
+#endif
 
 	// Get expr token.
 	XFER(BYTE);
@@ -1271,9 +1292,11 @@ EExprToken UStruct::SerializeExpr( INT& iCode, FArchive& Ar )
 		}
 		case EX_Case:
 		{
-			_WORD *W=(_WORD*)&Script(iCode);
+			const INT PspWOffset = iCode;
 			XFER(_WORD);; // Code offset.
-			if( *W != MAXWORD )
+			_WORD W;
+			appMemcpy( &W, &Script(PspWOffset), sizeof(_WORD) );
+			if( W != MAXWORD )
 				SerializeExpr( iCode, Ar ); // Boolean expr.
 			break;
 		}

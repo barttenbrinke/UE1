@@ -26,11 +26,17 @@ option(BUILD_WINDRV "Build WinDrv" OFF)
 option(BUILD_STATIC "Link everything into a single binary" OFF)
 option(BUILD_IPDRV "Build IpDrv (networking / multiplayer)" ON)
 
-# NOTE: IpDrv is REQUIRED even for single player -- Entry.unr (the menu map)
-# imports it, so without it the engine dies with "Can't find file 'Entry'"
-# right after the intro. The PSP SDK provides every BSD sockets header except
-# net/if.h and sys/ioctl.h, which are guarded the same way the Vita port
-# guards them.
+# IpDrv: Entry.unr (the menu map) imports IpDrv classes such as
+# ClientBeaconReceiver, so IpDrv.u must be loadable. Whether the NATIVE side is
+# required is a separate question -- an earlier "Can't find file 'Entry'"
+# failure was blamed on IpDrv being absent, but that turned out to be the PSP
+# bug where stat()/fopen() fail on a file this process already has open.
+#
+# The PSP SDK provides every BSD sockets header except net/if.h and
+# sys/ioctl.h, guarded the same way the Vita port guards them, and the socket
+# layer itself is made inert in UnSocket.h -- calling into sceNetInet* without
+# bringing the network stack up first is a kernel fault that reboots the
+# console.
 
 if(VITA OR PSP)
   # Neither console can load UE1's modules as shared libraries, so everything
@@ -190,6 +196,14 @@ else()
     # on the hardware FPU. Measured: worst-case frame 99ms -> 70ms, with the
     # renderer's occlusion pass alone dropping 3012ms -> 1622ms per 100 frames.
     add_compile_options(-fsingle-precision-constant)
+
+    # Debuggability on real hardware. PSPLink reports the faulting PC and RA,
+    # but tail-call optimisation overwrites RA, so crash dumps kept naming
+    # unrelated functions (__divdf3, a lightmap routine) instead of the real
+    # caller. -g costs nothing at runtime and lets psp-addr2line turn a PC
+    # straight into file:line. The Vita build sets -fno-optimize-sibling-calls
+    # for the same reason.
+    add_compile_options(-g -fno-optimize-sibling-calls)
 
     # Measured and rejected: -O3 and -ffast-math made no difference at all
     # (70/54/50/51 ms vs 70/55/50/51 ms). Not worth -ffast-math's risk of
