@@ -79,7 +79,8 @@ fi
 # lines with TurnLeft/TurnRight/LookUp/LookDown and JoyX/JoyY with
 # "Axis aStrafe speed=1" / "Axis aBaseY speed=1" to try it.
 # SDL's PSP pad: Joy1=Cross Joy2=Circle Joy3=Square Joy4=Triangle Joy5=Select
-# Joy7=Start Joy10=L Joy11=R, JoyX/JoyY=stick, JoyPov*=D-pad.
+# Joy7=Start Joy10=L Joy11=R, JoyX/JoyY=stick, JoyPov*=D-pad. While Select is
+# held the driver reports the D-pad as Joy14/Joy6/Joy15/Joy16 (up/down/left/right).
 sed -i '' \
   -e 's|^Joy1=.*|Joy1=MoveBackward|' \
   -e 's|^Joy2=.*|Joy2=StrafeRight|' \
@@ -97,6 +98,10 @@ sed -i '' \
   -e 's|^JoyPovDown=.*|JoyPovDown=Duck|' \
   -e 's|^JoyPovLeft=.*|JoyPovLeft=PrevWeapon|' \
   -e 's|^JoyPovRight=.*|JoyPovRight=NextWeapon|' \
+  -e 's|^Joy14=.*|Joy14=InventoryActivate|' \\
+  -e 's|^Joy6=.*|Joy6=ActivateTranslator|' \\
+  -e 's|^Joy15=.*|Joy15=InventoryPrevious|' \\
+  -e 's|^Joy16=.*|Joy16=InventoryNext|' \\
   "$DEST/System/Unreal.ini"
 
 # macOS writes a 4KB "._name" AppleDouble beside every file written to a

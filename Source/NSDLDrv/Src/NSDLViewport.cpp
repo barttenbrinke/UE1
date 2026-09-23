@@ -798,6 +798,47 @@ UBOOL UNSDLViewport::TickInput()
 						((UObject*)Console)->GetMainFrame()->StateNode &&
 						((UObject*)Console)->GetMainFrame()->StateNode->GetFName() == "Menuing";
 					const BYTE* JoyMap = bIsInUI ? JoyButtonMapUI : JoyButtonMap;
+#ifdef __PSP__
+					// Select shift layer (PSP-CONTROLS.txt): the PSP is one button short
+					// of Unreal's inventory actions, so while Select is held the D-pad
+					// reports as Joy14/Joy6/Joy15/Joy16 (up/down/left/right), and Select itself
+					// only fires -- press and release together -- when let go without
+					// having shifted anything, i.e. on a tap. A D-pad button pressed
+					// shifted releases shifted too, whatever Select does meanwhile.
+					if( !bIsInUI )
+					{
+						static UBOOL SelectHeld = 0, SelectUsed = 0;
+						static BYTE  ShiftedDown = 0;   // bit per D-pad button pressed while shifted
+						static const BYTE ShiftKey[4] = { IK_Joy14, IK_Joy6, IK_Joy15, IK_Joy16 };
+						const UBOOL Down = ( Ev.type == SDL_CONTROLLERBUTTONDOWN );
+						if( Ev.cbutton.button == SDL_CONTROLLER_BUTTON_BACK )
+						{
+							if( Down ) { SelectHeld = 1; SelectUsed = 0; }
+							else
+							{
+								SelectHeld = 0;
+								if( !SelectUsed )
+								{
+									CauseInputEvent( JoyButtonMap[SDL_CONTROLLER_BUTTON_BACK], IST_Press );
+									CauseInputEvent( JoyButtonMap[SDL_CONTROLLER_BUTTON_BACK], IST_Release );
+								}
+							}
+							break;
+						}
+						if( Ev.cbutton.button >= SDL_CONTROLLER_BUTTON_DPAD_UP && Ev.cbutton.button <= SDL_CONTROLLER_BUTTON_DPAD_RIGHT )
+						{
+							const INT  Dir = Ev.cbutton.button - SDL_CONTROLLER_BUTTON_DPAD_UP;
+							const BYTE Bit = 1 << Dir;
+							if( Down ? SelectHeld : ( ShiftedDown & Bit ) )
+							{
+								if( Down ) { SelectUsed = 1; ShiftedDown |= Bit; }
+								else       ShiftedDown &= ~Bit;
+								CauseInputEvent( ShiftKey[Dir], Down ? IST_Press : IST_Release );
+								break;
+							}
+						}
+					}
+#endif
 					CauseInputEvent( JoyMap[Ev.cbutton.button], ( Ev.type == SDL_CONTROLLERBUTTONDOWN ) ? IST_Press : IST_Release );
 				}
 				break;
