@@ -923,6 +923,8 @@ UBOOL appFindPackageFile( const char* In, const FGuid* Guid, char* Out )
 		const char* Cached = PspResolvedLookup( In );
 		if( Cached )
 		{
+			if( !*Cached )
+				return 0;   // known missing (negative entry, see the end)
 			strcpy( Out, Cached );
 			return 1;
 		}
@@ -991,6 +993,9 @@ UBOOL appFindPackageFile( const char* In, const FGuid* Guid, char* Out )
 	debugf( "PSPFIND: NOT FOUND '%s'", In );
 #endif
 	// Not found.
+#ifdef __PSP__
+	PspResolvedAdd( In, "" );   // negative entry: do not stat the card for this name again
+#endif
 	return 0;
 	unguard;
 }

@@ -28,7 +28,7 @@
 // to be a sized-internalformat problem, not a palette one. It is back on, and
 // now it matters: with 32-bit RGBA uploads pspgl runs out of texture memory
 // (GL_OUT_OF_MEMORY) after a few thousand mips. 8-bit indexed is a 4x saving.
-#define GLAD_GL_EXT_paletted_texture    0
+#define GLAD_GL_EXT_paletted_texture    1
 #define GLAD_GL_EXT_bgra                0
 #define GLAD_GL_ARB_multitexture        0
 #define GLAD_GL_EXT_texture_env_combine 0

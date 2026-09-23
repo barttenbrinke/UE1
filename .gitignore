@@ -13,3 +13,6 @@ psptest/build/
 # Retail game data - copyrighted, never commit this
 GAME_ASSETS/
 build-psplink/
+build-psp-prof/
+build-psp-o3/
+build-psp-gprof/

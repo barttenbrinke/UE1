@@ -178,6 +178,12 @@ extern "C" { int sce_newlib_heap_kb_size = -1024; }
 // lookup miss and InitEngine() fail in LoadClass. The Vita build does the same
 // thing via its SYSTEM_PATH ending in "/System/".
 #define SYSTEM_PATH "PSP/GAME/Unreal/System/"
+#ifdef PSP_GPROF
+#include <pspprof.h>
+#ifndef PSP_GPROF_SECONDS
+#define PSP_GPROF_SECONDS 120.0
+#endif
+#endif
 static char GRootPath[MAX_PATH] = "ms0:/" SYSTEM_PATH;
 
 // NOTE: a pspDebugInstallErrorHandler() crash handler was tried here and does
@@ -231,6 +237,13 @@ void PlatformPreInit()
 	// produces inf/NaN. The PSP's FPU traps on inexact/underflow/divide-by-zero
 	// instead, so those become fatal exceptions. Mask them.
 	pspSdkDisableFPUExceptions();
+#ifdef PSP_GPROF
+	// Function-level profile on real hardware: pspsdk's gprof samples the PC
+	// from a VTimer and -pg records call arcs. Dumped by the main loop after
+	// PSP_GPROF_SECONDS, because HOME exits through sceKernelExitGame and
+	// never reaches atexit.
+	gprof_start();   // no debugf here: the log device does not exist yet
+#endif
 
 	std::set_terminate( PspOnTerminate );
 	std::set_new_handler( PspOnBadAlloc );
@@ -343,6 +356,19 @@ void MainLoop( UEngine* Engine )
 #endif
 		Engine->Tick( NewTime - OldTime );
 		OldTime = NewTime;
+#ifdef PSP_GPROF
+		{
+			static DOUBLE GprofStart = 0.0;
+			static UBOOL  GprofDone  = 0;
+			if( GprofStart == 0.0 ) GprofStart = NewTime;
+			if( !GprofDone && NewTime - GprofStart > PSP_GPROF_SECONDS )
+			{
+				GprofDone = 1;
+				gprof_stop( "ms0:/PSP/GAME/Unreal/gmon.out", 1 );
+				debugf( NAME_Log, "PSPPROF: gmon.out written after %.0f s", (FLOAT)PSP_GPROF_SECONDS );
+			}
+		}
+#endif
 
 		// Enforce optional maximum tick rate.
 		INT MaxTickRate = Engine->GetMaxTickRate();

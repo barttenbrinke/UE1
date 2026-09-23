@@ -114,11 +114,15 @@ extern "C" int __wrap_sceGeDrawSync( int Mode )
 // glFinish says the GE is done with it. One sync per wrap rather than per draw.
 //
 enum { PSP_VTX_RING_BYTES = 512 * 1024 };
+static void PspFlushBatch();   // mesh triangle batch, defined with the emitters below
+static INT   GPspBatchDraws = 0, GPspBatchPolys = 0, GPspFacetDraws = 0;   // per report interval
 static INT GPspLastUploadedMips = 0;   // levels the last UploadTexture really sent (chain may be cut short)
 static INT GPspLastUploadBytes  = 0;   // image bytes the last UploadTexture handed to pspgl
 static INT GPspTexBytes         = 0;   // image bytes pspgl holds for every cached texture
 static INT GPspTexBudget        = -1;  // [PSP] TextureBudgetMB, resolved on first use
 static INT GPspUploadFailed     = 0;
+static INT GPspUpFirst = 0, GPspUpRealtime = 0, GPspUpBig = 0;   // per report interval
+static INT GPspUpBytes = 0;                                       // bytes handed to GL per interval
 #include <pspsysmem.h>
 // Heap picture for the log: newlib arena in use / free, plus what the kernel
 // still has outside the heap. Cheap; used in periodic reports and on failures.
@@ -418,6 +422,9 @@ void UNOpenGLRenderDevice::PostEditChange()
 
 void UNOpenGLRenderDevice::Flush()
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	guard(UNOpenGLRenderDevice::Flush);
 
 	if( TexAlloc.Num() )
@@ -500,6 +507,9 @@ UBOOL UNOpenGLRenderDevice::Exec( const char* Cmd, FOutputDevice* Out )
 
 void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane ScreenClear, DWORD RenderLockFlags, BYTE* InHitData, INT* InHitSize )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	guard(UNOpenGLRenderDevice::Lock);
 
 	BindCycles = ImageCycles = ComplexCycles = GouraudCycles = TileCycles = 0;
@@ -532,6 +542,17 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				(FLOAT)( Elapsed * 10.0 ),
 				(unsigned)GPspUploadCount, (unsigned)( GPspUploadCount - GPspUploadLast ) );
 			debugf( NAME_Log, "PSPPERF:   textures %i KB resident in %i cached, %i upload failures; %s", GPspTexBytes / 1024, BindMap.Size(), GPspUploadFailed, PspHeapStr() );
+			debugf( NAME_Log, "PSPPERF:   uploads: %i first-time, %i realtime re-uploads, %i of them >=256x256, %i KB moved, hw palette %s",
+				GPspUpFirst, GPspUpRealtime, GPspUpBig, GPspUpBytes / 1024, UseHwPalette ? "on" : "off" );
+			GPspUpFirst = GPspUpRealtime = GPspUpBig = GPspUpBytes = 0;
+			{
+				extern CORE_API INT GPspFileRefills, GPspFileRefillBytes;
+				static INT LastRefills = 0, LastBytes = 0;
+				debugf( NAME_Log, "PSPPERF:   memory stick: %i window refills, %i KB read", GPspFileRefills - LastRefills, ( GPspFileRefillBytes - LastBytes ) / 1024 );
+				LastRefills = GPspFileRefills; LastBytes = GPspFileRefillBytes;
+			}
+			debugf( NAME_Log, "PSPPERF:   draws: %i mesh polys in %i batches, %i facet passes", GPspBatchPolys, GPspBatchDraws, GPspFacetDraws );
+			GPspBatchPolys = GPspBatchDraws = GPspFacetDraws = 0;
 			debugf( NAME_Log, "PSPPERF:   renddev %.1f%% | bind %.0fms image %.0fms complex %.0fms gouraud %.0fms tile %.0fms | ENGINE %.0fms (%.1f%%)",
 				(FLOAT)( 100.0 * RendDev / Max( Elapsed, (DOUBLE)0.001 ) ),
 				(FLOAT)(Bind*1000), (FLOAT)(Image*1000), (FLOAT)(Complex*1000),
@@ -595,6 +616,9 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 
 void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	guard(UNOpenGLRenderDevice::Unlock);
 
 	glFlush();
@@ -620,6 +644,9 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 
 void UNOpenGLRenderDevice::DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	guard(UNOpenGLRenderDevice::DrawComplexSurface);
 
 	check(Surface.Texture);
@@ -646,6 +673,9 @@ void UNOpenGLRenderDevice::DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& 
 
 void UNOpenGLRenderDevice::DrawComplexSurfaceMultiTex( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	const FLOAT UDot = Facet.MapCoords.XAxis | Facet.MapCoords.Origin;
 	const FLOAT VDot = Facet.MapCoords.YAxis | Facet.MapCoords.Origin;
 
@@ -766,6 +796,7 @@ static inline void PspDrawFan( INT N )
 	glDrawArrays( N == 3 ? GL_TRIANGLES : GL_TRIANGLE_FAN, 0, N );
 }
 
+
 static UBOOL PspSetArrays( UBOOL bTex, UBOOL bColor, const void* Base, INT Stride )
 {
 	const BYTE* P = (const BYTE*)Base;
@@ -805,39 +836,87 @@ static UBOOL PspSetArrays( UBOOL bTex, UBOOL bColor, const void* Base, INT Strid
 	return 1;
 }
 
+// Every glDrawArrays costs pspgl a malloc, a vertex copy and a D-cache flush
+// syscall -- ~67us on hardware, and the intro issued 210 draws per frame, 55%
+// of them single mesh triangles from DrawGouraudPolygon. So: (1) mesh polys
+// with the same texture, flags and frame are appended to one triangle list
+// and drawn together (flushed by every other entry point), and (2) each BSP
+// facet pass is one triangle list instead of one fan per poly. pspgl copies
+// the vertices at draw time, so these buffers need not outlive the call.
+enum { PSP_BATCH_MAX_VERTS = 3072, PSP_POLY_MAX = 128 };
+static BYTE  GPspBatchBuf[PSP_BATCH_MAX_VERTS * 24] __attribute__((aligned(64)));
+static INT   GPspBatchVerts = 0;
+static UBOOL GPspBatchOpen  = 0;
+static QWORD GPspBatchTex   = 0;
+static DWORD GPspBatchFlags = 0;
+static const FSceneNode* GPspBatchFrame = NULL;
+
+static void PspFlushBatch()
+{
+	if( GPspBatchVerts > 0 && PspSetArrays( 1, 1, GPspBatchBuf, 24 ) )
+	{
+		glDrawArrays( GL_TRIANGLES, 0, GPspBatchVerts );
+		++GPspBatchDraws;
+	}
+	GPspBatchVerts = 0;
+	GPspBatchOpen  = 0;
+}
+
+// Fan -> triangle list copy: vertices 0,i,i+1 for i in 1..N-2, Stride bytes each.
+static inline BYTE* PspFanToTris( BYTE* Out, const BYTE* Fan, INT N, INT Stride )
+{
+	for( INT i = 1; i < N - 1; ++i )
+	{
+		appMemcpy( Out,            Fan,                  Stride );
+		appMemcpy( Out + Stride,   Fan + i * Stride,     Stride );
+		appMemcpy( Out + 2*Stride, Fan + (i+1) * Stride, Stride );
+		Out += 3 * Stride;
+	}
+	return Out;
+}
+
 // Emit every polygon of the facet for one pass, reusing the cached raw U/V.
 static void PspEmitFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
                           FLOAT UPan, FLOAT VPan, FLOAT UMult, FLOAT VMult )
 {
-	INT Base = 0;
+	INT Tris = 0;
+	for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
+		if( Poly->NumPts >= 3 && Poly->NumPts <= PSP_POLY_MAX )
+			Tris += Poly->NumPts - 2;
+	if( !Tris )
+		return;
+	BYTE* Buf = (BYTE*)PspClaimVtx( Tris * 3 * 20 );
+	if( !Buf )
+		return;
+	static BYTE Fan[PSP_POLY_MAX * 20];
+	BYTE* Out  = Buf;
+	INT   Base = 0;
 	for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
 	{
 		const INT N = Poly->NumPts;
-		if( N < 3 )
+		if( N < 3 || N > PSP_POLY_MAX )
 		{
-			// Degenerate poly: emitting it would hand pspgl a zero-length
-			// vertex array, and it flushes that through
-			// sceKernelDcacheWritebackInvalidateRange( addr, 0 ), which the
-			// kernel rejects with a syscall exception. Harmless in PPSSPP.
 			Base += N;
 			continue;
 		}
-		GPspVtx = (FLOAT*)PspClaimVtx( N * 20 );
-		if( !GPspVtx ) { Base += N; continue; }
-		FLOAT* Out = GPspVtx;
+		FLOAT* F = (FLOAT*)Fan;
 		for( INT i = 0; i < N; ++i )
 		{
 			const FLOAT* Raw = &GPspRawUV[ ( Base + i ) * 2 ];
-			*Out++ = ( Raw[0] - UDot - UPan ) * UMult;
-			*Out++ = ( Raw[1] - VDot - VPan ) * VMult;
+			*F++ = ( Raw[0] - UDot - UPan ) * UMult;
+			*F++ = ( Raw[1] - VDot - VPan ) * VMult;
 			const FVector& P = Poly->Pts[i]->Point;
-			*Out++ = P.X;
-			*Out++ = P.Y;
-			*Out++ = P.Z;
+			*F++ = P.X;
+			*F++ = P.Y;
+			*F++ = P.Z;
 		}
-		if( PspSetArrays( 1, 0, GPspVtx, 20 ) )
-			PspDrawFan( N );
+		Out = PspFanToTris( Out, Fan, N, 20 );
 		Base += N;
+	}
+	if( PspSetArrays( 1, 0, Buf, 20 ) )
+	{
+		glDrawArrays( GL_TRIANGLES, 0, Tris * 3 );
+		++GPspFacetDraws;
 	}
 }
 
@@ -916,65 +995,73 @@ static void PspEmitFacetLit( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 	const BYTE* LMData = (const BYTE*)LM.Mips[0]->DataPtr;
 	const INT   LMU    = LM.Mips[0]->USize;
 	const INT   LMV    = LM.Mips[0]->VSize;
-	// Same -0.5 texel bias the lightmap pass applies via SetTexture's PanBias.
 	const FLOAT LMUPan = LM.Pan.X - 0.5f * LM.UScale;
 	const FLOAT LMVPan = LM.Pan.Y - 0.5f * LM.VScale;
 	const FLOAT InvUScale = 1.f / LM.UScale;
 	const FLOAT InvVScale = 1.f / LM.VScale;
 
-	INT Base = 0;
+	INT Tris = 0;
+	for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
+		if( Poly->NumPts >= 3 && Poly->NumPts <= PSP_POLY_MAX )
+			Tris += Poly->NumPts - 2;
+	if( !Tris )
+		return;
+	BYTE* Buf = (BYTE*)PspClaimVtx( Tris * 3 * 24 );
+	if( !Buf )
+		return;
+	static BYTE Fan[PSP_POLY_MAX * 24];
+	BYTE* Out  = Buf;
+	INT   Base = 0;
 	for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
 	{
 		const INT N = Poly->NumPts;
-		if( N < 3 )
+		if( N < 3 || N > PSP_POLY_MAX )
 		{
-			// Degenerate poly: emitting it would hand pspgl a zero-length
-			// vertex array, and it flushes that through
-			// sceKernelDcacheWritebackInvalidateRange( addr, 0 ), which the
-			// kernel rejects with a syscall exception. Harmless in PPSSPP.
 			Base += N;
 			continue;
 		}
-		GPspVtx = (FLOAT*)PspClaimVtx( N * 24 );
-		if( !GPspVtx ) { Base += N; continue; }
-		BYTE* Out = (BYTE*)GPspVtx;
+		BYTE* V = Fan;
 		for( INT i = 0; i < N; ++i )
 		{
 			const FLOAT* Raw = &GPspRawUV[ ( Base + i ) * 2 ];
 
-			FLOAT* T = (FLOAT*)Out;
+			FLOAT* T = (FLOAT*)V;
 			T[0] = ( Raw[0] - UDot - UPan ) * UMult;
 			T[1] = ( Raw[1] - VDot - VPan ) * VMult;
 
-			// Lightmap texel for this vertex.
 			INT iu = appFloor( ( Raw[0] - UDot - LMUPan ) * InvUScale );
 			INT iv = appFloor( ( Raw[1] - VDot - LMVPan ) * InvVScale );
 			iu = Clamp( iu, 0, LMU - 1 );
 			iv = Clamp( iv, 0, LMV - 1 );
 			const BYTE* Texel = &LMData[ ( iv * LMU + iu ) * 4 ];
 
-			BYTE* C = Out + 8;
+			BYTE* C = V + 8;
 			C[0] = GPspLightLUT[ Texel[2] & 0x7F ];   // BGRA source -> R
 			C[1] = GPspLightLUT[ Texel[1] & 0x7F ];   // G
 			C[2] = GPspLightLUT[ Texel[0] & 0x7F ];   // B
 			C[3] = 255;
 
-			FLOAT* V = (FLOAT*)( Out + 12 );
+			FLOAT* P3 = (FLOAT*)( V + 12 );
 			const FVector& P = Poly->Pts[i]->Point;
-			V[0] = P.X; V[1] = P.Y; V[2] = P.Z;
-			Out += 24;
+			P3[0] = P.X; P3[1] = P.Y; P3[2] = P.Z;
+			V += 24;
 		}
-		if( PspSetArrays( 1, 1, GPspVtx, 24 ) )
-		{
-			PspDrawFan( N );
-		}
+		Out = PspFanToTris( Out, Fan, N, 24 );
 		Base += N;
+	}
+	if( PspSetArrays( 1, 1, Buf, 24 ) )
+	{
+		glDrawArrays( GL_TRIANGLES, 0, Tris * 3 );
+		++GPspFacetDraws;
 	}
 }
 #endif
 
 void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	const FLOAT UDot = Facet.MapCoords.XAxis | Facet.MapCoords.Origin;
 	const FLOAT VDot = Facet.MapCoords.YAxis | Facet.MapCoords.Origin;
 
@@ -1239,6 +1326,67 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 {
 		guard(UNOpenGLRenderDevice::DrawGouraudPolygon);
 
+#ifdef __PSP__
+		// Batch path (see PspFlushBatch). Polys needing the separate fog pass
+		// keep the stock two-draw path below.
+		const UBOOL bFogPass = ( (PolyFlags & (PF_RenderFog|PF_Translucent|PF_Modulated)) == PF_RenderFog );
+		if( !bFogPass && NumPts >= 3 && NumPts <= PSP_POLY_MAX )
+		{
+			uclock(GouraudCycles);
+			const UBOOL Modulated = ( PolyFlags & PF_Modulated );
+			const UBOOL Realtime  = ( Texture.TextureFlags & TF_RealtimeChanged );
+			if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime ) )
+				PspFlushBatch();
+			if( !GPspBatchOpen )
+			{
+				SetSceneNode( Frame );
+				SetBlend( PolyFlags );
+				SetTexture( 0, Texture, ( PolyFlags & PF_Masked ), 0 );
+				ResetTexture( 1 );
+				ResetTexture( 2 );
+				ResetTexture( 3 );
+				GPspBatchOpen  = 1;
+				GPspBatchTex   = Texture.CacheID;
+				GPspBatchFlags = PolyFlags;
+				GPspBatchFrame = Frame;
+			}
+			const INT Need = 3 * ( NumPts - 2 );
+			if( GPspBatchVerts + Need > PSP_BATCH_MAX_VERTS )
+			{
+				PspFlushBatch();
+				GPspBatchOpen = 1;   // GL state is still the batch's
+			}
+			static BYTE Fan[PSP_POLY_MAX * 24];
+			BYTE* V = Fan;
+			for( INT i = 0; i < NumPts; ++i )
+			{
+				FTransTexture* P = Pts[i];
+				FLOAT* T = (FLOAT*)V;
+				T[0] = P->U * TexInfo[0].UMult;
+				T[1] = P->V * TexInfo[0].VMult;
+				BYTE* C = V + 8;
+				if( Modulated )
+					C[0] = C[1] = C[2] = 255;
+				else
+				{
+					C[0] = PspToByte( P->Light.X );
+					C[1] = PspToByte( P->Light.Y );
+					C[2] = PspToByte( P->Light.Z );
+				}
+				C[3] = 255;
+				FLOAT* P3 = (FLOAT*)( V + 12 );
+				P3[0] = P->Point.X; P3[1] = P->Point.Y; P3[2] = P->Point.Z;
+				V += 24;
+			}
+			PspFanToTris( GPspBatchBuf + GPspBatchVerts * 24, Fan, NumPts, 24 );
+			GPspBatchVerts += Need;
+			++GPspBatchPolys;
+			uunclock(GouraudCycles);
+			return;
+		}
+		PspFlushBatch();
+#endif
+
 		SetSceneNode( Frame );
 		uclock(GouraudCycles);
 		SetBlend( PolyFlags );
@@ -1342,6 +1490,9 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 
 void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, FLOAT X, FLOAT Y, FLOAT XL, FLOAT YL, FLOAT U, FLOAT V, FLOAT UL, FLOAT VL, FSpanBuffer* Span, FLOAT Z, FPlane Light, FPlane Fog, DWORD PolyFlags )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	guard(UNOpenGLRenderDevice::DrawTile);
 
 	SetSceneNode( Frame );
@@ -1374,16 +1525,25 @@ void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, F
 
 void UNOpenGLRenderDevice::Draw2DLine( FSceneNode* Frame, FPlane Color, DWORD LineFlags, FVector P1, FVector P2 )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 
 }
 
 void UNOpenGLRenderDevice::Draw2DPoint( FSceneNode* Frame, FPlane Color, DWORD LineFlags, FLOAT X1, FLOAT Y1, FLOAT X2, FLOAT Y2 )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 
 }
 
 void UNOpenGLRenderDevice::EndFlash( )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	guard(UNOpenGLESRenderDevice::EndFlash);
 
 	if( ColorMod == FPlane( 0.f, 0.f, 0.f, 0.f ) )
@@ -1416,11 +1576,17 @@ void UNOpenGLRenderDevice::EndFlash( )
 
 void UNOpenGLRenderDevice::PushHit( const BYTE* Data, INT Count )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 
 }
 
 void UNOpenGLRenderDevice::PopHit( INT Count, UBOOL bForce )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 
 }
 
@@ -1466,6 +1632,9 @@ void UNOpenGLRenderDevice::ReadPixels( FColor* Pixels )
 
 void UNOpenGLRenderDevice::ClearZ( FSceneNode* Frame )
 {
+#ifdef __PSP__
+	PspFlushBatch();
+#endif
 	guard(UNOpenGLRenderDevice::ClearZ);
 
 	SetBlend( PF_Occlude );
@@ -1704,6 +1873,24 @@ void UNOpenGLRenderDevice::ConvertTextureMipI8( const FMipmap* Mip, const FColor
 	if( UseHwPalette )
 	{
 		// GL has support for palettized textures, use it. Still have to fix the alpha.
+#ifdef __PSP__
+		// Same gamma treatment as the expanded path below: brighten the
+		// palette, not the texels. The PSP GE applies the CLUT in hardware,
+		// so this is the only place the correction can go.
+		PspInitGamma();
+		static FColor GPspHwGammaPal[256];
+		if( GPspGammaActive )
+		{
+			for( INT k = 0; k < 256; ++k )
+			{
+				GPspHwGammaPal[k].R = GPspGammaLUT[ Palette[k].R ];
+				GPspHwGammaPal[k].G = GPspGammaLUT[ Palette[k].G ];
+				GPspHwGammaPal[k].B = GPspGammaLUT[ Palette[k].B ];
+				GPspHwGammaPal[k].A = Palette[k].A;
+			}
+			Palette = GPspHwGammaPal;
+		}
+#endif
 		const DWORD* SrcPal = (const DWORD*)Palette;
 		EnsureComposeSize( 256 * 4 );
 		DWORD* DstPal = (DWORD*)Compose;
@@ -1721,7 +1908,13 @@ void UNOpenGLRenderDevice::ConvertTextureMipI8( const FMipmap* Mip, const FColor
 		for( ; i < 256; ++i )
 			*DstPal++ = *SrcPal++ | ALPHA_MASK;
 		// set palette pointer
+#ifdef __PSP__
+		// pspgl insists internalformat == format for colour tables (and for
+		// glTexImage2D); GL_RGBA8 is rejected with GL_INVALID_OPERATION.
+		glColorTableEXT( GL_TEXTURE_2D, GL_RGBA, 256, GL_RGBA, GL_UNSIGNED_BYTE, (const void*)Compose );
+#else
 		glColorTableEXT( GL_TEXTURE_2D, GL_RGBA8, 256, GL_RGBA, GL_UNSIGNED_BYTE, (const void*)Compose );
+#endif
 	}
 	else
 	{
@@ -1885,6 +2078,8 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 	BYTE*  LastBuf = NULL; INT LastW = 0, LastH = 0; GLenum LastFmt = 0, LastIF = 0;
 	INT    BaseW = 0, BaseH = 0;
 	GPspLastUploadBytes = 0;
+	if( NewTexture ) ++GPspUpFirst; else ++GPspUpRealtime;
+	if( Info.Mips[0] && Info.Mips[0]->USize * Info.Mips[0]->VSize >= 256 * 256 ) ++GPspUpBig;
 #endif
 	uclock(ImageCycles);
 	for( INT MipIndex = 0; MipIndex < Info.NumMips; ++MipIndex )
@@ -1937,14 +2132,15 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 #ifdef __PSP__
 		if( bPad )
 		{
-			// Both converters emit 4 bytes/pixel, tightly packed at USize
-			// stride (UseHwPalette is off on PSP, so I8 expands to RGBA too).
+			// Tightly packed at USize stride, 4 bytes/pixel from the RGBA
+			// converters or 1 byte/pixel for a hardware-palette (index8) upload.
 			// Copy into the top-left of an UpW x UpH image and replicate the
 			// last column and row outward, so clamped/filtered sampling at the
 			// edge sees the edge texel rather than black.
 			static BYTE* PadBuf = NULL;
 			static INT   PadCap = 0;
-			const INT Need = UpW * UpH * 4;
+			const INT Bpp  = ( UploadFormat == GL_COLOR_INDEX8_EXT || UploadFormat == GL_COLOR_INDEX ) ? 1 : 4;
+			const INT Need = UpW * UpH * Bpp;
 			if( Need > PadCap )
 			{
 				BYTE* N = (BYTE*)realloc( PadBuf, Need );
@@ -1956,10 +2152,20 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 				for( INT y = 0; y < UpH; ++y )
 				{
 					const INT sy = Min( y, SrcH - 1 );
-					const DWORD* SrcRow = (const DWORD*)UploadBuf + sy * SrcW;
-					DWORD*       DstRow = (DWORD*)PadBuf + y * UpW;
-					for( INT x = 0; x < UpW; ++x )
-						DstRow[x] = SrcRow[ Min( x, SrcW - 1 ) ];
+					if( Bpp == 4 )
+					{
+						const DWORD* SrcRow = (const DWORD*)UploadBuf + sy * SrcW;
+						DWORD*       DstRow = (DWORD*)PadBuf + y * UpW;
+						for( INT x = 0; x < UpW; ++x )
+							DstRow[x] = SrcRow[ Min( x, SrcW - 1 ) ];
+					}
+					else
+					{
+						const BYTE* SrcRow = UploadBuf + sy * SrcW;
+						BYTE*       DstRow = PadBuf + y * UpW;
+						for( INT x = 0; x < UpW; ++x )
+							DstRow[x] = SrcRow[ Min( x, SrcW - 1 ) ];
+					}
 				}
 				UploadBuf = PadBuf;
 			}
@@ -1990,14 +2196,10 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 			InternalFormat = GL_RGBA;
 		else if( InternalFormat == GL_RGB8 )
 			InternalFormat = GL_RGB;
-		else if( InternalFormat == GL_COLOR_INDEX8_EXT )
-		{
-			// EXT_paletted_texture wants internalformat = GL_COLOR_INDEX8_EXT
-			// but format = GL_COLOR_INDEX. UE1 passes GL_COLOR_INDEX8_EXT for
-			// both, which desktop drivers tolerate and pspgl rejects with
-			// GL_INVALID_OPERATION.
-			UploadFormat = GL_COLOR_INDEX;
-		}
+		// Indexed uploads keep format == internalformat == GL_COLOR_INDEX8_EXT:
+		// that is what pspgl's format table matches on (see its glTexImage2D,
+		// "if (format != internalformat) goto out_error"). The earlier rewrite
+		// to GL_COLOR_INDEX here made every paletted upload fail.
 #endif
 		// Upload to GL.
 #ifdef __PSP__
@@ -2031,6 +2233,7 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 #endif
 		++UploadedMips;
 #ifdef __PSP__
+		GPspUpBytes += UpW * UpH * ( ( UploadFormat == GL_COLOR_INDEX8_EXT || UploadFormat == GL_COLOR_INDEX ) ? 1 : 4 );
 		LastBuf = UploadBuf; LastW = UpW; LastH = UpH; LastFmt = UploadFormat; LastIF = InternalFormat;
 		if( NewTexture )
 			GPspLastUploadBytes += UpW * UpH * ( ( UploadFormat == GL_COLOR_INDEX8_EXT || UploadFormat == GL_COLOR_INDEX ) ? 1 : 4 );

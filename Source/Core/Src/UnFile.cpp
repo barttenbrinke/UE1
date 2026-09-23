@@ -322,35 +322,64 @@ CORE_API DOUBLE appFmod( DOUBLE Y, DOUBLE X )
 }
 CORE_API DOUBLE appSin( DOUBLE Value )
 {
+#ifdef __PSP__
+	return sinf( (FLOAT)Value );   // single precision: the PSP FPU has no double
+#else
 	return sin(Value);
+#endif
 }
 CORE_API DOUBLE appCos( DOUBLE Value )
 {
+#ifdef __PSP__
+	return cosf( (FLOAT)Value );   // single precision: the PSP FPU has no double
+#else
 	return cos(Value);
+#endif
 }
 CORE_API DOUBLE appTan( DOUBLE Value )
 {
+#ifdef __PSP__
+	return tanf( (FLOAT)Value );   // single precision: the PSP FPU has no double
+#else
 	return tan(Value);
+#endif
 }
 CORE_API DOUBLE appAtan( DOUBLE Value )
 {
+#ifdef __PSP__
+	return atanf( (FLOAT)Value );   // single precision: the PSP FPU has no double
+#else
 	return atan(Value);
+#endif
 }
 CORE_API DOUBLE appAtan2( DOUBLE Y, FLOAT X )
 {
+#ifdef __PSP__
+	return atan2f( (FLOAT)Y, X );
+#else
 	return atan2(Y,X);
+#endif
 }
 CORE_API DOUBLE appSqrt( DOUBLE Value )
 {
 #ifdef PLATFORM_PSVITA
 	return __builtin_sqrt(Value);
+#elif defined(__PSP__)
+	// sqrt.s is one FPU instruction; sqrt(double) is a soft-float call that
+	// the hardware profile put at 14% of the frame (2.1M calls, mostly from
+	// lighting, RenderSubsurface, DrawMesh and OccludeBsp).
+	return __builtin_sqrtf( (FLOAT)Value );
 #else
 	return sqrt(Value);
 #endif
 }
 CORE_API DOUBLE appPow( DOUBLE A, DOUBLE B )
 {
+#ifdef __PSP__
+	return powf( (FLOAT)A, (FLOAT)B );
+#else
 	return pow(A,B);
+#endif
 }
 CORE_API UBOOL appIsNan( DOUBLE A )
 {
@@ -595,6 +624,7 @@ enum
 {
 	PSP_MAX_FILES          = 32,
 	PSP_FILE_BUFSZ         = 16384,
+	PSP_FILE_MINREFILL     = 2048,    // first read after a seek; doubles while sequential
 	PSP_MAX_KERNEL_HANDLES = 6,
 };
 struct FPspFile
@@ -610,7 +640,11 @@ struct FPspFile
 	BYTE*	Buffer;			// read window, allocated on first buffered read
 	INT		BufBase;		// file offset of Buffer[0]
 	INT		BufLen;			// valid bytes in Buffer
+	INT		NextRefill;		// bytes to read on the next window refill (adaptive)
 };
+
+// Memory Stick traffic, for the PSPPERF report: window refills and bytes.
+CORE_API INT GPspFileRefills = 0, GPspFileRefillBytes = 0;
 
 // Move the kernel handle only when it is not already in the right place.
 static INT PspSeekTo( FPspFile* Slot, INT Offset )
@@ -951,10 +985,22 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 			continue;
 		}
 
-		// Refill the window at the current position.
+		// Refill the window at the current position. Adaptive size: the
+		// hardware profile showed package loading during play (the linker
+		// seeking from export to export) paying for a full 16KB Memory Stick
+		// read per seek to serve a few bytes -- 24% of the frame. So a refill
+		// that does not continue the previous window starts small and only
+		// grows while the reads stay sequential.
+		const UBOOL bSequential = Slot->BufLen > 0 && Slot->FilePos == Slot->BufBase + Slot->BufLen;
+		if( bSequential && Slot->NextRefill > 0 )
+			Slot->NextRefill = Min( Slot->NextRefill * 2, (INT)PSP_FILE_BUFSZ );
+		else
+			Slot->NextRefill = PSP_FILE_MINREFILL;
 		if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
 			break;
-		int N = sceIoRead( Slot->Fd, Slot->Buffer, PSP_FILE_BUFSZ );
+		int N = sceIoRead( Slot->Fd, Slot->Buffer, Slot->NextRefill );
+		++GPspFileRefills;
+		if( N > 0 ) GPspFileRefillBytes += N;
 		if( N <= 0 )
 		{
 			if( N < 0 )

@@ -92,6 +92,10 @@ if(PSP)
     psphprm pspctrl psppower psprtc
     stdc++ m
   )
+  if(PSP_GPROF)
+    target_link_libraries(${PROJECT_NAME} pspprof)
+    target_link_options(${PROJECT_NAME} PRIVATE -pg)
+  endif()
 endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE UNREAL_EXPORTS UPACKAGE_NAME=${PROJECT_NAME})
@@ -105,10 +109,15 @@ endif()
 if(PSP)
   # create_pbp_file passes MEMSIZE=1, which claims the extra RAM present on the
   # PSP-2000 and later. Unreal will need it.
+  # XMB icon (144x80) and background (480x272), both cut from the Vita port's
+  # logo art in Res/sce_sys (magick: -trim, fit 136x72 on black; and a plain
+  # half-size of pic0.png).
   create_pbp_file(
     TARGET ${PROJECT_NAME}
     TITLE "Unreal"
     VERSION 01.00
+    ICON_PATH       ${CMAKE_CURRENT_SOURCE_DIR}/Res/psp/ICON0.PNG
+    BACKGROUND_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Res/psp/PIC1.PNG
   )
 endif()
 

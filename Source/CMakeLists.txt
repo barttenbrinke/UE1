@@ -214,6 +214,20 @@ else()
       add_definitions(-DPSP_PSPLINK=1)
     endif()
 
+    # Hardware experiments. PSP_O3 must come last to beat the -O2 added above
+    # and by the build type. PSP_GPROF instruments every function (-pg) and
+    # links pspsdk's sampling profiler; SDLLaunch starts it at boot and dumps
+    # gmon.out after a fixed time (see there), read with psp-gprof.
+    option(PSP_O3 "Compile the PSP build with -O3" OFF)
+    if(PSP_O3)
+      add_compile_options(-O3)
+    endif()
+    option(PSP_GPROF "Build with -pg and pspsdk's gprof profiler" OFF)
+    if(PSP_GPROF)
+      add_compile_options(-pg)
+      add_definitions(-DPSP_GPROF=1)
+    endif()
+
     # Measured and rejected: -O3 and -ffast-math made no difference at all
     # (70/54/50/51 ms vs 70/55/50/51 ms). Not worth -ffast-math's risk of
     # subtle float behaviour changes, so we stay on -O2 with IEEE semantics.
