@@ -2,22 +2,22 @@ UNREAL (1998) ON PSP-2000 -- CONTROLS
 =====================================
 
 The PSP has one analog stick, so the layout follows the usual PSP shooter
-convention: face buttons move, the stick looks, triggers fire. Everything
+convention: the stick moves, the face buttons look, triggers fire. Everything
 below is an ini binding ([Engine.Input] in System/Unreal.ini) except the
 Select shift layer, which lives in the SDL input driver.
 
-MOVEMENT (face buttons)
-  Triangle      move forward
-  Cross         move backward
-  Square        strafe left
-  Circle        strafe right
+MOVEMENT (analog stick)
+  push / pull   move forward / backward
+  left / right  strafe
+  The nub drifts a little at rest; DeadZoneXYZ=0.2 in [NSDLDrv.NSDLClient].
 
-LOOK (analog stick)
-  push up       look DOWN (inverted, flight style); to un-invert, flip the
-                sign: "JoyY=Axis aLookUp speed=-0.5"
-  left / right  turn
-  Speed is "speed=0.5" on JoyX / JoyY; raise or lower to taste. The dead zone
-  is DeadZoneXYZ=0.2 in [NSDLDrv.NSDLClient] (the nub drifts a little).
+LOOK (face buttons) -- the PSP shooter convention, by physical position
+  Triangle      look up
+  Cross         look down
+  Square        turn left
+  Circle        turn right
+  Turn/look rates are the TurnLeft/TurnRight/LookUp/LookDown aliases in
+  [Engine.Input] (Speed=150 turn, 100 look); change those to taste.
 
 WEAPONS (triggers)
   R             fire
@@ -44,13 +44,12 @@ SELECT SHIFT LAYER (hold Select, then press)
   Select + Down    translator (same as a plain Select tap)
   A quick tap of Select on its own still opens the translator.
 
-THE REVERSE LAYOUT (stick moves, face buttons look)
-  Some PSP shooters do it the other way round. To try it, in Unreal.ini set:
-    JoyX=Axis aStrafe speed=1
-    JoyY=Axis aBaseY speed=1
-    Joy4=LookUp    Joy1=LookDown    Joy3=TurnLeft    Joy2=TurnRight
-  and put the movement aliases back on nothing. install-psp.sh documents the
-  same swap in its controls block.
+THE REVERSE LAYOUT (face buttons move, stick looks)
+  To try it, in Unreal.ini set:
+    Joy4=MoveForward  Joy1=MoveBackward  Joy3=StrafeLeft  Joy2=StrafeRight
+    JoyX=Axis aTurn speed=0.5
+    JoyY=Axis aLookUp speed=0.5        (inverted; -0.5 for normal)
+  Speed 2 was far too twitchy on hardware; 0.5 was usable.
 
 HOW THE PAD IS NUMBERED (for editing bindings)
   SDL's built-in PSP mapping, as the driver sees it:

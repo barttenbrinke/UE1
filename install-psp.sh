@@ -73,39 +73,38 @@ TextureBudgetMB=8 ; resident GL texture memory before least-recently-used evicti
 PSPCFG
 fi
 
-# PSP-2000 controls (one stick): face buttons move, the stick looks, triggers
-# fire, D-pad jumps/ducks/switches weapons. the default layout. The reverse (stick
-# moves, face buttons look) is what some PSP shooters do; swap the four Joy1-4
-# lines with TurnLeft/TurnRight/LookUp/LookDown and JoyX/JoyY with
-# "Axis aStrafe speed=1" / "Axis aBaseY speed=1" to try it.
+# PSP-2000 controls (one stick), the PSP shooter convention (Coded Arms, MoH
+# Heroes, PSP Quake): the stick MOVES, the face buttons LOOK, triggers fire,
+# D-pad jumps/ducks/switches weapons. The alternative -- face buttons move,
+# stick looks -- is the four Joy1-4 lines as MoveBackward/StrafeRight/
+# StrafeLeft/MoveForward with JoyX="Axis aTurn speed=0.5" and
+# JoyY="Axis aLookUp speed=0.5" (inverted). See PSP-CONTROLS.txt.
 # SDL's PSP pad: Joy1=Cross Joy2=Circle Joy3=Square Joy4=Triangle Joy5=Select
 # Joy7=Start Joy10=L Joy11=R, JoyX/JoyY=stick, JoyPov*=D-pad. While Select is
 # held the driver reports the D-pad as Joy14/Joy6/Joy15/Joy16 (up/down/left/right).
 sed -i '' \
-  -e 's|^Joy1=.*|Joy1=MoveBackward|' \
-  -e 's|^Joy2=.*|Joy2=StrafeRight|' \
-  -e 's|^Joy3=.*|Joy3=StrafeLeft|' \
-  -e 's|^Joy4=.*|Joy4=MoveForward|' \
+  -e 's|^Joy1=.*|Joy1=LookDown|' \
+  -e 's|^Joy2=.*|Joy2=TurnRight|' \
+  -e 's|^Joy3=.*|Joy3=TurnLeft|' \
+  -e 's|^Joy4=.*|Joy4=LookUp|' \
   -e 's|^Joy5=.*|Joy5=ActivateTranslator|' \
   -e 's|^Joy7=.*|Joy7=ShowMenu|' \
   -e 's|^Joy10=.*|Joy10=AltFire|' \
   -e 's|^Joy11=.*|Joy11=Fire|' \
-  -e 's|^JoyX=.*|JoyX=Axis aTurn speed=0.5|' \
-  -e 's|^JoyY=.*|JoyY=Axis aLookUp speed=0.5|' \
+  -e 's|^JoyX=.*|JoyX=Axis aStrafe speed=1|' \
+  -e 's|^JoyY=.*|JoyY=Axis aBaseY speed=1|' \
   -e 's|^JoyU=.*|JoyU=|' \
   -e 's|^JoyV=.*|JoyV=|' \
   -e 's|^JoyPovUp=.*|JoyPovUp=Jump|' \
   -e 's|^JoyPovDown=.*|JoyPovDown=Duck|' \
   -e 's|^JoyPovLeft=.*|JoyPovLeft=PrevWeapon|' \
   -e 's|^JoyPovRight=.*|JoyPovRight=NextWeapon|' \
-  -e 's|^Joy14=.*|Joy14=InventoryActivate|' \\
-  -e 's|^Joy6=.*|Joy6=ActivateTranslator|' \\
-  -e 's|^Joy15=.*|Joy15=InventoryPrevious|' \\
-  -e 's|^Joy16=.*|Joy16=InventoryNext|' \\
+  -e 's|^Joy14=.*|Joy14=InventoryActivate|' \
+  -e 's|^Joy6=.*|Joy6=ActivateTranslator|' \
+  -e 's|^Joy15=.*|Joy15=InventoryPrevious|' \
+  -e 's|^Joy16=.*|Joy16=InventoryNext|' \
   "$DEST/System/Unreal.ini"
-# The nub drifts a little at rest and is short-throw: a 20% dead zone, and the
-# look axes at speed 0.5 (2 was far too twitchy on hardware). Vertical look is
-# inverted by default (push up = look down).
+# The nub drifts a little at rest: a 20% dead zone.
 sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^DeadZoneXYZ=.*|DeadZoneXYZ=0.2|' "$DEST/System/Unreal.ini"
 
 # macOS writes a 4KB "._name" AppleDouble beside every file written to a
