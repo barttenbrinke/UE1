@@ -399,6 +399,21 @@ UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 	{
 		// Local map file.
 		guard(LocalMapURL);
+#ifdef __PSP__
+		// Two full levels never fit the PSP heap at once: LoadMap keeps the
+		// old level alive until the new one is in, and the intro map plus
+		// Vortex2 ran the heap dry (appMalloc returned NULL inside UPolys and
+		// the load died at a null pointer). So hop through the small,
+		// already-resident Entry level first: that shuts the old level down
+		// and lets garbage collection free it before the real load starts.
+		if( GLevel && GLevel != GEntry && appStricmp( *URL.Map, "Entry" ) != 0 )
+		{
+			debugf( NAME_Log, "PSP: releasing %s before loading %s", GLevel->GetPathName(), *URL.Map );
+			if( !LoadMap( FURL( &LastURL, "Entry", TRAVEL_Partial ), NULL, Error256 ) )
+				return 0;
+			GObj.CollectGarbage( GSystem, RF_Intrinsic );
+		}
+#endif
 		return LoadMap( URL, NULL, Error256 )!=NULL;
 		unguard;
 	}

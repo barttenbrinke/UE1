@@ -232,6 +232,12 @@ CORE_API void* appMalloc( INT Size, const char* Tag )
 
 	void* Ptr = malloc( Size );
 	check(Ptr);
+#ifdef __PSP__
+	// check() is compiled out in release; a silent NULL here surfaced as a
+	// null-pointer crash deep inside level loading. Fail loudly instead.
+	if( !Ptr )
+		appErrorf( "Out of memory: %i bytes (%s)", Size, Tag ? Tag : "?" );
+#endif
 
 #if CHECK_ALLOCS
 	AddTrackedAllocation( Ptr, Size, Tag );
@@ -298,7 +304,16 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 		return NULL;
 	}
 #endif
+#ifdef __PSP__
+	{
+		void* Result = realloc( Ptr, NewSize );
+		if( !Result && NewSize > 0 )
+			appErrorf( "Out of memory: realloc %i bytes (%s)", NewSize, Tag ? Tag : "?" );
+		return Result;
+	}
+#else
 	return realloc( Ptr, NewSize );
+#endif
 #endif
 
 	unguardf(( "%08X %i %s", (INT)Ptr, NewSize, Tag ));
@@ -622,7 +637,7 @@ CORE_API TArray<FString> appFindFiles( const char* Spec )
 // PSP_MAX_KERNEL_HANDLES real handles alive and evict the least recently used.
 enum
 {
-	PSP_MAX_FILES          = 32,
+	PSP_MAX_FILES          = 96,     // logical slots: a level change keeps both levels' packages open (32 was hit by Vortex2 -- 'Error opening file')
 	PSP_FILE_BUFSZ         = 16384,
 	PSP_FILE_MINREFILL     = 2048,    // first read after a seek; doubles while sequential
 	PSP_MAX_KERNEL_HANDLES = 6,
@@ -677,6 +692,7 @@ static FPspFile* PspFileAlloc()
 	for( INT i=0; i<PSP_MAX_FILES; i++ )
 		if( !GPspFiles[i].InUse )
 			return &GPspFiles[i];
+	debugf( NAME_Warning, "PSP file layer: all %i slots in use", (INT)PSP_MAX_FILES );
 	return NULL;
 }
 

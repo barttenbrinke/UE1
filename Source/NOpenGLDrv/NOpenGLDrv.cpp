@@ -1508,6 +1508,35 @@ void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, F
 	else
 		glColor4f( Light.X, Light.Y, Light.Z, 1.f );
 
+#ifdef __PSP__
+	// Canvas tiles are drawn with the depth test OFF on PSP. UE1 draws the
+	// whole canvas at Z=1.0: the menu panel first, its text over it. Desktop
+	// GL passes the equal depth (GL_LEQUAL); the GE does not, so menu text,
+	// HUD icons and the intro title were rejected while the panel showed.
+	// Found by bisecting with [PSP] TileDepthTest=0, which stays as a switch
+	// along with TileAlphaTest and a log of the first masked tiles.
+	{
+		static INT TileAlpha = -1, TileDepth = 0, TileLog = 0;
+		if( TileAlpha < 0 )
+		{
+			TileAlpha = 1;
+			GetConfigInt( "PSP", "TileAlphaTest", TileAlpha );
+			GetConfigInt( "PSP", "TileDepthTest", TileDepth );
+			debugf( NAME_Log, "PSPTILE: alpha test %s, depth test %s", TileAlpha ? "on" : "OFF", TileDepth ? "on" : "OFF" );
+		}
+		if( !TileAlpha ) glDisable( GL_ALPHA_TEST );
+		if( !TileDepth ) glDisable( GL_DEPTH_TEST );
+		if( ( PolyFlags & PF_Masked ) && Y > 40.f && TileLog < 24 )   // skip the HUD line at the top; the menu is what is missing
+		{
+			++TileLog;
+			debugf( NAME_Log, "PSPTILE: masked id=%08X%08X %ix%i mips=%i pal=%i rt=%i | XY %.0f,%.0f size %.0fx%.0f Z=%.2f | UV %.1f,%.1f + %.1f,%.1f mult %.5f,%.5f | flags %08X light %.2f,%.2f,%.2f",
+				(unsigned)( Texture.CacheID >> 32 ), (unsigned)Texture.CacheID, Texture.USize, Texture.VSize, Texture.NumMips, Texture.Palette ? 1 : 0,
+				( Texture.TextureFlags & TF_Realtime ) ? 1 : 0,
+				X, Y, XL, YL, Z, U, V, UL, VL, TexInfo[0].UMult, TexInfo[0].VMult, (unsigned)PolyFlags, Light.X, Light.Y, Light.Z );
+		}
+	}
+#endif
+
 	glBegin( GL_TRIANGLE_FAN );
 		glTexCoord2f( (U   )*TexInfo[0].UMult, (V   )*TexInfo[0].VMult );
 		glVertex3f( RFX2*Z*(X   -Frame->FX2), RFY2*Z*(Y   -Frame->FY2), Z );
@@ -1519,6 +1548,9 @@ void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, F
 		glVertex3f( RFX2*Z*(X   -Frame->FX2), RFY2*Z*(Y+YL-Frame->FY2), Z );
 	glEnd();
 
+#ifdef __PSP__
+	glEnable( GL_DEPTH_TEST );   // undo the TileDepthTest bisect for the next draw
+#endif
 	uunclock(TileCycles);
 	unguard;
 }
@@ -1902,7 +1934,8 @@ void UNOpenGLRenderDevice::ConvertTextureMipI8( const FMipmap* Mip, const FColor
 		if( Masked )
 		{
 			*DstPal++ = 0;
-			++i;
+			++SrcPal;   // was missing: every other entry shifted by one, so
+			++i;        // masked text drew in entry 0's colour (black) -- invisible
 		}
 		// 255 alpha on the rest of the palette
 		for( ; i < 256; ++i )
