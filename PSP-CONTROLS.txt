@@ -13,10 +13,11 @@ MOVEMENT (face buttons)
   Circle        strafe right
 
 LOOK (analog stick)
-  push          look up / down (inverted like Unreal's right-stick default;
-                flip the sign of "JoyY=Axis aLookUp speed=-2" to change)
+  push up       look DOWN (inverted, flight style); to un-invert, flip the
+                sign: "JoyY=Axis aLookUp speed=-0.5"
   left / right  turn
-  Speed is "speed=2" on JoyX / JoyY; raise or lower to taste.
+  Speed is "speed=0.5" on JoyX / JoyY; raise or lower to taste. The dead zone
+  is DeadZoneXYZ=0.2 in [NSDLDrv.NSDLClient] (the nub drifts a little).
 
 WEAPONS (triggers)
   R             fire

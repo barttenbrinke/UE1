@@ -75,7 +75,7 @@ private:
 	SDL_Rect DisplaySize;
 	SWORD JoyAxis[SDL_CONTROLLER_AXIS_MAX];
 	UBOOL QuitRequested;
-	FLOAT InputUpdateTime;
+	DOUBLE InputUpdateTime;   // DOUBLE: a FLOAT of absolute seconds cannot resolve a frame
 
 	// Info saved during captures and fullscreen sessions.
 	INT SavedX, SavedY;

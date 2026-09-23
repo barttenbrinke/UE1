@@ -740,8 +740,8 @@ UBOOL UNSDLViewport::TickInput()
 
 	SDL_Event Ev;
 	INT Tmp;
-	const FLOAT CurTime = appSeconds();
-	const FLOAT DeltaTime = CurTime - InputUpdateTime;
+	const DOUBLE CurTime = appSeconds();
+	const FLOAT DeltaTime = (FLOAT)( CurTime - InputUpdateTime );
 
 	while( SDL_PollEvent( &Ev ) )
 	{
@@ -867,6 +867,16 @@ UBOOL UNSDLViewport::TickInput()
 							NewValue = 0;
 					}
 					JoyAxis[Ev.caxis.axis] = NewValue;
+#ifdef __PSP__
+					{
+						static INT AxisLog = 0;
+						if( AxisLog < 40 && ( AxisLog < 8 || Abs(NewValue) > 8000 ) )
+						{
+							++AxisLog;
+							debugf( NAME_Log, "PSPJOY: axis %i raw %i -> key %i value %i (deadzone %i)", (INT)Ev.caxis.axis, (INT)Ev.caxis.value, (INT)Key, NewValue, DeadZone );
+						}
+					}
+#endif
 				}
 				break;
 			case SDL_MOUSEMOTION:
@@ -907,6 +917,16 @@ UBOOL UNSDLViewport::TickInput()
 			if ( ( Client->InvertV && Key == IK_JoyV ) || ( Client->InvertY && Key == IK_JoyY ) )
 				Scale = -Scale;
 			CauseInputEvent( Key, IST_Axis, FltValue * Scale );
+#ifdef __PSP__
+			{
+				static INT FeedLog = 0;
+				if( FeedLog < 20 && Abs(FltValue) > 0.5f )
+				{
+					++FeedLog;
+					debugf( NAME_Log, "PSPJOY: feed key %i = %.1f (raw %.2f x scale %.3f, dt %.3f)", (INT)Key, FltValue * Scale, FltValue, Scale, DeltaTime );
+				}
+			}
+#endif
 		}
 	}
 

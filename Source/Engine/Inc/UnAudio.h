@@ -108,19 +108,28 @@ class ENGINE_API UMusic : public UObject
     MAKEFOURCC(ch0, ch1, ch2, ch3)
 
 // Main Riff-Wave header.
+// These structs are overlaid on WAV file data at whatever offset the chunks
+// happen to sit; on the PSP an unaligned word load is a fatal address error
+// (the 'smpl' chunk's cSampleLoops took the console down on the first level
+// change). Packing them makes every field access byte-safe on MIPS.
+#ifdef __PSP__
+#define PSP_PACKED __attribute__((packed))
+#else
+#define PSP_PACKED
+#endif
 struct FRiffWaveHeader
 { 
 	DWORD	rID;			// Contains characters 'RIFF'
 	DWORD	ChunkLen;		// Remaining length of the entire riff chunk (= file).
 	DWORD	wID;			// Form type. Contains characters 'WAVE' for .wav files.
-};
+} PSP_PACKED;
 
 // General chunk header format.
 struct FRiffChunk
 {
 	DWORD	ChunkID;		  // General data chunk ID like 'data', or 'fmt ' 
 	DWORD	ChunkLen;		  // Length of the rest of this chunk in bytes.
-};
+} PSP_PACKED;
 
 // ChunkID: 'fmt ' ("WaveFormatEx" structure ) 
 struct FFormatChunk
@@ -132,7 +141,7 @@ struct FFormatChunk
     _WORD   nBlockAlign;       // Block size of data = Channels times BYTES per sample.
     _WORD   wBitsPerSample;    // Number of bits per sample of mono data.
     _WORD   cbSize;            // The count in bytes of the size of extra information (after cbSize).
-};
+} PSP_PACKED;
 
 // ChunkID: 'smpl'
 struct FSampleChunk
@@ -146,7 +155,7 @@ struct FSampleChunk
 	DWORD   dwSMPTEOffset;		//
 	DWORD   cSampleLoops;		// Number of tSampleLoop structures following this chunk
 	DWORD   cbSamplerData;		// 
-};
+} PSP_PACKED;
  
 struct FSampleLoop				// Immediately following cbSamplerData in the SMPL chunk.
 {
@@ -156,7 +165,7 @@ struct FSampleLoop				// Immediately following cbSamplerData in the SMPL chunk.
 	DWORD	dwEnd;				// Endpoint of the loop in samples
 	DWORD	dwFraction;			// Fractional sample adjustment
 	DWORD	dwPlayCount;		// Play count
-};
+} PSP_PACKED;
 
 //
 // Structure for in-memory interpretation and modification of WAVE sound structures.

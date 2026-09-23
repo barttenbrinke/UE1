@@ -416,6 +416,59 @@ CORE_API FLOAT appFrand()
 //
 // Size of a file.  Returns -1 if doesn't exist.
 //
+#ifdef __PSP__
+// The PSP's sceIo driver takes neither backslashes nor "..": the menu's New
+// Game URL is "..\maps\Vortex2.unr", which PPSSPP quietly accepts and the
+// real console reports as a missing file. Rewrite a path the way the driver
+// needs it: slashes only, relative paths anchored on the current directory
+// (newlib emulates chdir; sceIoOpen does not), "." and ".." collapsed.
+static const char* PspFullPath( const char* In )
+{
+	static char Out[512];
+	char Tmp[512];
+	if( strchr( In, ':' ) )
+		appStrncpy( Tmp, In, sizeof(Tmp) );
+	else
+	{
+		if( !getcwd( Tmp, sizeof(Tmp) ) )
+			Tmp[0] = 0;
+		INT L = strlen( Tmp );
+		if( L && Tmp[L-1] != '/' && Tmp[L-1] != '\\' && L < (INT)sizeof(Tmp) - 1 )
+			Tmp[L++] = '/', Tmp[L] = 0;
+		appStrncat( Tmp, In, sizeof(Tmp) - 1 );
+	}
+	for( char* c = Tmp; *c; ++c )
+		if( *c == '\\' )
+			*c = '/';
+	// Split at the drive prefix ("ms0:/", "host0:/") and normalise the rest.
+	const char* Rest = strchr( Tmp, ':' );
+	Rest = Rest ? Rest + 1 : Tmp;
+	if( *Rest == '/' ) ++Rest;
+	INT Prefix = Rest - Tmp;
+	appMemcpy( Out, Tmp, Prefix ); Out[Prefix] = 0;
+	// Stack of path components.
+	const char* Seg[64]; INT SegLen[64]; INT N = 0;
+	for( const char* p = Rest; *p; )
+	{
+		const char* e = strchr( p, '/' ); if( !e ) e = p + strlen( p );
+		INT Len = e - p;
+		if( Len == 0 || ( Len == 1 && p[0] == '.' ) ) {}
+		else if( Len == 2 && p[0] == '.' && p[1] == '.' ) { if( N ) --N; }
+		else if( N < 64 ) { Seg[N] = p; SegLen[N] = Len; ++N; }
+		p = *e ? e + 1 : e;
+	}
+	INT O = Prefix;
+	for( INT i = 0; i < N; ++i )
+	{
+		if( O + SegLen[i] + 2 >= (INT)sizeof(Out) ) break;
+		appMemcpy( Out + O, Seg[i], SegLen[i] ); O += SegLen[i];
+		if( i < N - 1 ) Out[O++] = '/';
+	}
+	Out[O] = 0;
+	return Out;
+}
+#endif
+
 CORE_API INT appFSize( const char* fname )
 {
 	guard(appFSize);
@@ -436,7 +489,7 @@ CORE_API INT appFSize( const char* fname )
 	struct stat PspSt;
 	// stat rather than open: the PSP cannot stat or fopen a file the process
 	// already holds open, and it fails with errno unset when that happens.
-	if( stat( fname, &PspSt ) != 0 )
+	if( stat( PspFullPath( fname ), &PspSt ) != 0 )
 		return -1;
 	return (INT)PspSt.st_size;
 #else
@@ -768,6 +821,7 @@ CORE_API FILE* appFopen( const char* Path, const char* Mode )
 	while( Live-- >= PSP_MAX_KERNEL_HANDLES )
 		PspEvictOne();
 
+	Path = PspFullPath( Path );
 	SceUID Fd = sceIoOpen( Path, PspFlags, 0777 );
 	if( Fd < 0 )
 		return NULL;

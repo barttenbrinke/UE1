@@ -90,8 +90,8 @@ sed -i '' \
   -e 's|^Joy7=.*|Joy7=ShowMenu|' \
   -e 's|^Joy10=.*|Joy10=AltFire|' \
   -e 's|^Joy11=.*|Joy11=Fire|' \
-  -e 's|^JoyX=.*|JoyX=Axis aTurn speed=2|' \
-  -e 's|^JoyY=.*|JoyY=Axis aLookUp speed=-2|' \
+  -e 's|^JoyX=.*|JoyX=Axis aTurn speed=0.5|' \
+  -e 's|^JoyY=.*|JoyY=Axis aLookUp speed=0.5|' \
   -e 's|^JoyU=.*|JoyU=|' \
   -e 's|^JoyV=.*|JoyV=|' \
   -e 's|^JoyPovUp=.*|JoyPovUp=Jump|' \
@@ -103,6 +103,10 @@ sed -i '' \
   -e 's|^Joy15=.*|Joy15=InventoryPrevious|' \\
   -e 's|^Joy16=.*|Joy16=InventoryNext|' \\
   "$DEST/System/Unreal.ini"
+# The nub drifts a little at rest and is short-throw: a 20% dead zone, and the
+# look axes at speed 0.5 (2 was far too twitchy on hardware). Vertical look is
+# inverted (push up = look down), Bart's preference.
+sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^DeadZoneXYZ=.*|DeadZoneXYZ=0.2|' "$DEST/System/Unreal.ini"
 
 # macOS writes a 4KB "._name" AppleDouble beside every file written to a
 # FAT/exFAT volume, and the PSP lists those as "Corrupted Data". rsync creates

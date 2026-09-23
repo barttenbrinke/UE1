@@ -772,6 +772,16 @@ CORE_API DOUBLE appSeconds()
 	return (DOUBLE)ret.QuadPart * GSecondsPerCycle;
 #elif defined(PLATFORM_PSVITA)
 	return (DOUBLE)sceKernelGetProcessTimeLow() * GSecondsPerCycle;
+#elif defined(__PSP__)
+	// Relative to the first call. The PSP counter is microseconds since the
+	// year 1 (~6e16), so absolute seconds are ~6e10 and anything that stores
+	// appSeconds() in a FLOAT loses all sub-4096-second resolution: the SDL
+	// input driver's frame delta came out 0.000 and the analog stick fed the
+	// game nothing.
+	static Uint64 Base = 0;
+	const Uint64 Now = SDL_GetPerformanceCounter();
+	if( !Base ) Base = Now;
+	return (DOUBLE)( Now - Base ) * GSecondsPerCycle;
 #elif defined(PLATFORM_SDL)
 	return (DOUBLE)SDL_GetPerformanceCounter() * GSecondsPerCycle;
 #else
