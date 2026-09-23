@@ -74,7 +74,7 @@ PSPCFG
 fi
 
 # PSP-2000 controls (one stick): face buttons move, the stick looks, triggers
-# fire, D-pad jumps/ducks/switches weapons. Bart's layout. The reverse (stick
+# fire, D-pad jumps/ducks/switches weapons. the default layout. The reverse (stick
 # moves, face buttons look) is what some PSP shooters do; swap the four Joy1-4
 # lines with TurnLeft/TurnRight/LookUp/LookDown and JoyX/JoyY with
 # "Axis aStrafe speed=1" / "Axis aBaseY speed=1" to try it.
@@ -105,7 +105,7 @@ sed -i '' \
   "$DEST/System/Unreal.ini"
 # The nub drifts a little at rest and is short-throw: a 20% dead zone, and the
 # look axes at speed 0.5 (2 was far too twitchy on hardware). Vertical look is
-# inverted (push up = look down), Bart's preference.
+# inverted by default (push up = look down).
 sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^DeadZoneXYZ=.*|DeadZoneXYZ=0.2|' "$DEST/System/Unreal.ini"
 
 # macOS writes a 4KB "._name" AppleDouble beside every file written to a
