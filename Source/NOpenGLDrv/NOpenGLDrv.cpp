@@ -553,6 +553,18 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 			}
 			debugf( NAME_Log, "PSPPERF:   draws: %i mesh polys in %i batches, %i facet passes", GPspBatchPolys, GPspBatchDraws, GPspFacetDraws );
 			GPspBatchPolys = GPspBatchDraws = GPspFacetDraws = 0;
+			{
+				// Once per run, when the heap gets tight: UE1's own per-class
+				// memory table, so an out-of-memory has a suspect list next to it.
+				static UBOOL ObjListDumped = 0;
+				struct mallinfo M = mallinfo();
+				if( !ObjListDumped && M.fordblks < 1024 * 1024 && sceKernelTotalFreeMemSize() < 2 * 1024 * 1024 )
+				{
+					ObjListDumped = 1;
+					debugf( NAME_Log, "PSPPERF: heap tight (%i KB free) -- object memory by class:", M.fordblks / 1024 );
+					GObj.Exec( "OBJ LIST", GSystem );
+				}
+			}
 			debugf( NAME_Log, "PSPPERF:   renddev %.1f%% | bind %.0fms image %.0fms complex %.0fms gouraud %.0fms tile %.0fms | ENGINE %.0fms (%.1f%%)",
 				(FLOAT)( 100.0 * RendDev / Max( Elapsed, (DOUBLE)0.001 ) ),
 				(FLOAT)(Bind*1000), (FLOAT)(Image*1000), (FLOAT)(Complex*1000),
