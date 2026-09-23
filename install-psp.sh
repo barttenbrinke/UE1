@@ -73,6 +73,32 @@ TextureBudgetMB=8 ; resident GL texture memory before least-recently-used evicti
 PSPCFG
 fi
 
+# PSP-2000 controls (one stick): face buttons move, the stick looks, triggers
+# fire, D-pad jumps/ducks/switches weapons. Bart's layout. The reverse (stick
+# moves, face buttons look) is what some PSP shooters do; swap the four Joy1-4
+# lines with TurnLeft/TurnRight/LookUp/LookDown and JoyX/JoyY with
+# "Axis aStrafe speed=1" / "Axis aBaseY speed=1" to try it.
+# SDL's PSP pad: Joy1=Cross Joy2=Circle Joy3=Square Joy4=Triangle Joy5=Select
+# Joy7=Start Joy10=L Joy11=R, JoyX/JoyY=stick, JoyPov*=D-pad.
+sed -i '' \
+  -e 's|^Joy1=.*|Joy1=MoveBackward|' \
+  -e 's|^Joy2=.*|Joy2=StrafeRight|' \
+  -e 's|^Joy3=.*|Joy3=StrafeLeft|' \
+  -e 's|^Joy4=.*|Joy4=MoveForward|' \
+  -e 's|^Joy5=.*|Joy5=ActivateTranslator|' \
+  -e 's|^Joy7=.*|Joy7=ShowMenu|' \
+  -e 's|^Joy10=.*|Joy10=AltFire|' \
+  -e 's|^Joy11=.*|Joy11=Fire|' \
+  -e 's|^JoyX=.*|JoyX=Axis aTurn speed=2|' \
+  -e 's|^JoyY=.*|JoyY=Axis aLookUp speed=-2|' \
+  -e 's|^JoyU=.*|JoyU=|' \
+  -e 's|^JoyV=.*|JoyV=|' \
+  -e 's|^JoyPovUp=.*|JoyPovUp=Jump|' \
+  -e 's|^JoyPovDown=.*|JoyPovDown=Duck|' \
+  -e 's|^JoyPovLeft=.*|JoyPovLeft=PrevWeapon|' \
+  -e 's|^JoyPovRight=.*|JoyPovRight=NextWeapon|' \
+  "$DEST/System/Unreal.ini"
+
 # macOS writes a 4KB "._name" AppleDouble beside every file written to a
 # FAT/exFAT volume, and the PSP lists those as "Corrupted Data". rsync creates
 # them too, not just Finder, so clean up whenever we wrote to a real card.
