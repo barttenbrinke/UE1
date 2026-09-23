@@ -40,8 +40,13 @@ class DLL_EXPORT UNOpenGLRenderDevice : public URenderDevice
 		GLuint Id;
 		INT BaseMip;
 		INT MaxLevel;
+		INT Bytes;        // PSP: image bytes pspgl holds for this texture
+		DWORD LastFrame;  // PSP: last frame it was bound (eviction order)
 	};
 	TMap<QWORD, FCachedTexture> BindMap;
+#ifdef __PSP__
+	void PspEvictTextures();
+#endif
 	TArray<GLuint> TexAlloc;
 
 	struct FTexInfo

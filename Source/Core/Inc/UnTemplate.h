@@ -502,6 +502,16 @@ public:
 	{
 		Pairs.Empty();
 	}
+	// Index access to keys and removal by index, for cache eviction loops
+	// (the PSP renderer's texture budget). Indices shift after RemoveAt.
+	const TK& KeyAt( INT i ) const
+	{
+		return Pairs(i).Key;
+	}
+	void RemoveAt( INT i )
+	{
+		Pairs.Remove( i );
+	}
 	UBOOL Find( const TK& Key, TI& Value ) const
 	{
 		INT i;

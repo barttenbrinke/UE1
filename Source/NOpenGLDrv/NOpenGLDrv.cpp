@@ -9,6 +9,173 @@
 
 #include "NOpenGLDrvPrivate.h"
 
+#ifdef PSP_PSPLINK
+// PSPLink-only diagnostic. Linked with -Wl,--wrap=glDrawArrays, so every
+// glDrawArrays from our code lands here. "-HALTDRAW=N" on the command line
+// freezes the main thread right BEFORE the Nth draw (after N-1 have been
+// issued), so pspgl's static display-list array can be pulled out of PSP
+// memory with pspsh's savemem and decoded on the host. Draw 14 is the one
+// that first fills a 512-word list and hands it to the GE.
+#include <pspthreadman.h>
+extern "C" void __real_glDrawArrays( GLenum Mode, GLint First, GLsizei Count );
+extern "C" void __wrap_glDrawArrays( GLenum Mode, GLint First, GLsizei Count )
+{
+	static INT Halt = -1, N = 0;
+	if( Halt < 0 )
+	{
+		Halt = 0;
+		Parse( appCmdLine(), "HALTDRAW=", Halt );
+	}
+	++N;
+	if( Halt && N == Halt )
+	{
+		printf( "PSPHALT: frozen before draw %d (mode=%d first=%d count=%d); dump pspgl dlists now\n", N, (int)Mode, (int)First, (int)Count );
+		fflush( stdout );
+		for( ;; )
+			sceKernelDelayThread( 1000000 );
+	}
+	__real_glDrawArrays( Mode, First, Count );
+}
+#endif
+
+#ifdef PSP_PSPLINK
+// GE queue diagnostics, also PSPLink-only (-Wl,--wrap on the sceGe calls).
+//   -NOGE    never hand a list to the GE (draws are built but never run)
+//   -SYNCGE  wait for each list to finish right after queueing it, so a
+//            GE-triggered fault lands on the main thread at a known draw
+//   -DUMPGE  print the first four lists word by word as they are queued
+#include <pspge.h>
+extern "C" int __real_sceGeListEnQueue( const void* List, void* Stall, int CbId, PspGeListArgs* Arg );
+extern "C" int __real_sceGeListSync( int Qid, int Mode );
+extern "C" int __real_sceGeDrawSync( int Mode );
+static INT GPspNoGe = -1, GPspSyncGe = 0, GPspDumpGe = 0, GPspGeLists = 0;
+static void PspGeSwitches()
+{
+	if( GPspNoGe >= 0 ) return;
+	GPspNoGe   = ParseParam( appCmdLine(), "NOGE" );
+	GPspSyncGe = ParseParam( appCmdLine(), "SYNCGE" );
+	GPspDumpGe = ParseParam( appCmdLine(), "DUMPGE" );
+}
+extern "C" int __wrap_sceGeListEnQueue( const void* List, void* Stall, int CbId, PspGeListArgs* Arg )
+{
+	PspGeSwitches();
+	++GPspGeLists;
+	const DWORD* W = (const DWORD*)List;
+	INT Len = ( (const DWORD*)Stall - W ) + 1;
+	printf( "PSPGE: enqueue #%d list=%p len=%d\n", GPspGeLists, List, Len );
+	fflush( stdout );
+	if( GPspDumpGe )
+	{
+		// Every list, raw, to the host BEFORE the GE runs it, so the one that
+		// kills the console can still be decoded (decode_dlist.py --file).
+		static FILE* F = NULL;
+		if( !F ) F = fopen( "host0:/lists.bin", "wb" );
+		if( F )
+		{
+			DWORD Hdr[4] = { 0x5453494c, (DWORD)GPspGeLists, (DWORD)Len, (DWORD)(size_t)List };
+			fwrite( Hdr, sizeof(Hdr), 1, F );
+			fwrite( W, 4, Len, F );
+			fflush( F );
+		}
+	}
+	if( GPspNoGe )
+		return 0x7000 + GPspGeLists;
+	int Q = __real_sceGeListEnQueue( List, Stall, CbId, Arg );
+	if( GPspSyncGe )
+	{
+		int R = __real_sceGeListSync( Q, 0 );
+		printf( "PSPGE: list #%d done (sync=%d)\n", GPspGeLists, R );
+		fflush( stdout );
+	}
+	return Q;
+}
+extern "C" int __wrap_sceGeListSync( int Qid, int Mode )
+{
+	PspGeSwitches();
+	return GPspNoGe ? 0 : __real_sceGeListSync( Qid, Mode );
+}
+extern "C" int __wrap_sceGeDrawSync( int Mode )
+{
+	PspGeSwitches();
+	return GPspNoGe ? 0 : __real_sceGeDrawSync( Mode );
+}
+#endif
+
+#ifdef __PSP__
+//
+// Vertex data for the GE must stay untouched until the GE has actually read it.
+// pspgl does not copy client arrays -- it hands the pointer to the hardware and
+// flushes the range with sceKernelDcacheWritebackInvalidateRange -- and the GE
+// runs asynchronously, so a single scratch buffer that every poly overwrites
+// (worse, one moved by realloc) is read back as garbage a few draws later.
+// PPSSPP consumes draws synchronously and never shows this.
+//
+// So hand out each draw its own slice of a ring, and only reuse the ring once
+// glFinish says the GE is done with it. One sync per wrap rather than per draw.
+//
+enum { PSP_VTX_RING_BYTES = 512 * 1024 };
+static INT GPspLastUploadedMips = 0;   // levels the last UploadTexture really sent (chain may be cut short)
+static INT GPspLastUploadBytes  = 0;   // image bytes the last UploadTexture handed to pspgl
+static INT GPspTexBytes         = 0;   // image bytes pspgl holds for every cached texture
+static INT GPspTexBudget        = -1;  // [PSP] TextureBudgetMB, resolved on first use
+static INT GPspUploadFailed     = 0;
+#include <pspsysmem.h>
+// Heap picture for the log: newlib arena in use / free, plus what the kernel
+// still has outside the heap. Cheap; used in periodic reports and on failures.
+// 8x8 mid-grey, 256 bytes: what a texture gets when pspgl could not take the
+// real image, so the GE always has memory to sample.
+static DWORD GPspPlaceholder[64];
+static UBOOL PspUploadPlaceholder()
+{
+	if( !GPspPlaceholder[0] )
+		for( INT i=0; i<64; ++i ) GPspPlaceholder[i] = 0xff808080;
+	glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, (void*)GPspPlaceholder );
+	return glGetError() == GL_NO_ERROR;
+}
+static const char* PspHeapStr()
+{
+	static char Buf[96];
+	struct mallinfo M = mallinfo();
+	appSprintf( Buf, "heap used %iKB free %iKB (arena %iKB), kernel free %iKB",
+		M.uordblks / 1024, M.fordblks / 1024, M.arena / 1024, sceKernelTotalFreeMemSize() / 1024 );
+	return Buf;
+}
+static BYTE* GPspVtxRing    = NULL;
+static INT   GPspVtxRingPos = 0;
+static FLOAT* GPspVtx     = NULL;   // current slice; valid until the next claim
+
+// Claim Bytes of ring space for a draw that is about to be issued.
+static void* PspClaimVtx( INT Bytes )
+{
+	Bytes = ( Bytes + 63 ) & ~63;           // keep every slice 64-byte aligned
+	if( Bytes > PSP_VTX_RING_BYTES )
+		return NULL;                        // absurdly large poly; skip it
+
+	if( !GPspVtxRing )
+	{
+		// Static, not memalign: by the time the renderer starts, the heap top is
+		// past 0x0A000000 (the PSP-2000's extra 32MB), and the GE cannot fetch
+		// vertices from there. Module data sits at 0x08Exxxxx, which it can.
+		static BYTE GPspVtxRingStore[PSP_VTX_RING_BYTES] __attribute__((aligned(64)));
+		GPspVtxRing = GPspVtxRingStore;
+		if( !GPspVtxRing )
+			return NULL;
+		GPspVtxRingPos = 0;
+	}
+
+	if( GPspVtxRingPos + Bytes > PSP_VTX_RING_BYTES )
+	{
+		// Wrapping would overwrite data the GE may still be reading.
+		glFinish();
+		GPspVtxRingPos = 0;
+	}
+
+	void* Slice = GPspVtxRing + GPspVtxRingPos;
+	GPspVtxRingPos += Bytes;
+	return Slice;
+}
+#endif
+
 /*-----------------------------------------------------------------------------
 	Global implementation.
 -----------------------------------------------------------------------------*/
@@ -264,10 +431,67 @@ void UNOpenGLRenderDevice::Flush()
 		glDeleteTextures( TexAlloc.Num(), &TexAlloc(0) );
 		TexAlloc.Empty();
 		BindMap.Empty();
+#ifdef __PSP__
+		GPspTexBytes = 0;
+#endif
 	}
 
 	unguard;
 }
+
+#ifdef __PSP__
+// pspgl keeps one copy of every texture image (VRAM when it fits, otherwise
+// the heap) and UE1's driver never lets go of a texture until the level
+// changes. Unreal's own data already fills ~27MB of the 64MB console, so the
+// intro flyby ran the heap dry after ~40 frames (845 uploads, ~15MB). Keep
+// resident images under [PSP] TextureBudgetMB by dropping the least recently
+// bound textures; anything bound this frame is never touched. pspgl defers the
+// actual free until the GE has finished with the image.
+void UNOpenGLRenderDevice::PspEvictTextures()
+{
+	guard(UNOpenGLRenderDevice::PspEvictTextures);
+	if( GPspTexBudget < 0 )
+	{
+		INT MB = 8;
+		GetConfigInt( "PSP", "TextureBudgetMB", MB );
+		GPspTexBudget = MB * 1024 * 1024;
+		debugf( NAME_Log, "PSPPERF: texture budget %i MB", MB );
+	}
+	if( GPspTexBytes <= GPspTexBudget )
+		return;
+	const INT Target = GPspTexBudget - GPspTexBudget / 4;
+	INT Evicted = 0, Freed = 0;
+	while( GPspTexBytes > Target )
+	{
+		INT   Best      = -1;
+		DWORD BestFrame = GPspFrameCount;
+		for( INT i = 0; i < BindMap.Size(); ++i )
+			if( BindMap[i].LastFrame < BestFrame )
+			{
+				BestFrame = BindMap[i].LastFrame;
+				Best      = i;
+			}
+		if( Best < 0 )
+			break;   // everything left was bound this frame
+		const QWORD Key  = BindMap.KeyAt( Best );
+		FCachedTexture T = BindMap[Best];
+		for( INT t = 0; t < MaxTexUnits; ++t )
+			if( TexInfo[t].CurrentCacheID == Key )
+				TexInfo[t].CurrentCacheID = 0;
+		glDeleteTextures( 1, &T.Id );
+		TexAlloc.RemoveItem( T.Id );
+		BindMap.RemoveAt( Best );
+		GPspTexBytes -= T.Bytes;
+		Freed        += T.Bytes;
+		++Evicted;
+	}
+	static INT Reports = 0;
+	if( ++Reports <= 10 || ( Reports % 50 ) == 0 )
+		debugf( NAME_Log, "PSPPERF: evicted %i textures (%i KB), %i KB resident, %i cached; %s",
+			Evicted, Freed / 1024, GPspTexBytes / 1024, BindMap.Size(), PspHeapStr() );
+	unguard;
+}
+#endif
 
 UBOOL UNOpenGLRenderDevice::Exec( const char* Cmd, FOutputDevice* Out )
 {
@@ -307,6 +531,7 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				(FLOAT)Elapsed, (FLOAT)( 100.0 / Max( Elapsed, (DOUBLE)0.001 ) ),
 				(FLOAT)( Elapsed * 10.0 ),
 				(unsigned)GPspUploadCount, (unsigned)( GPspUploadCount - GPspUploadLast ) );
+			debugf( NAME_Log, "PSPPERF:   textures %i KB resident in %i cached, %i upload failures; %s", GPspTexBytes / 1024, BindMap.Size(), GPspUploadFailed, PspHeapStr() );
 			debugf( NAME_Log, "PSPPERF:   renddev %.1f%% | bind %.0fms image %.0fms complex %.0fms gouraud %.0fms tile %.0fms | ENGINE %.0fms (%.1f%%)",
 				(FLOAT)( 100.0 * RendDev / Max( Elapsed, (DOUBLE)0.001 ) ),
 				(FLOAT)(Bind*1000), (FLOAT)(Image*1000), (FLOAT)(Complex*1000),
@@ -351,22 +576,6 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 	GLbitfield ClearBits = GL_DEPTH_BUFFER_BIT;
 	if( RenderLockFlags & LOCKR_ClearScreen )
 		ClearBits |= GL_COLOR_BUFFER_BIT;
-#ifdef PSP_CLEAR_TEST
-	// TEMPORARY DIAGNOSTIC -- is Lock() reached at all? If this never prints,
-	// the engine is not rendering and the black screen is a main-loop problem,
-	// not a GL one.
-	{
-		static INT LockCount = 0;
-		if( LockCount < 3 || ( LockCount % 10 ) == 0 )
-			debugf( NAME_Log, "PSPDIAG: Lock() call #%d flags=0x%08x", LockCount, (unsigned)RenderLockFlags );
-		++LockCount;
-	}
-	// The magenta clear that proved the present path works is retired -- it
-	// painted over the scene. Force a black clear every frame instead, so that
-	// stale back-buffer contents cannot be mistaken for rendered geometry.
-	glClearColor( 0.f, 0.f, 0.f, 1.f );
-	ClearBits |= GL_COLOR_BUFFER_BIT;
-#endif
 	glClear( ClearBits );
 
 	if( FlashScale != FPlane(0.5f, 0.5f, 0.5f, 0.0f) || FlashFog != FPlane(0.0f, 0.0f, 0.0f, 0.0f) )
@@ -518,20 +727,16 @@ void UNOpenGLRenderDevice::DrawComplexSurfaceMultiTex( FSceneNode* Frame, FSurfa
 //     texture-space dot products per vertex. They only need computing once.
 //
 static FLOAT* GPspRawUV   = NULL;   // raw u,v per vertex, shared by all passes
-static FLOAT* GPspVtx     = NULL;   // interleaved u,v,x,y,z for one pass
 static INT    GPspVtxMax  = 0;      // capacity in vertices
 
 static UBOOL PspEnsureVtxBuffers( INT Pts )
 {
 	if( Pts > GPspVtxMax )
 	{
+		// GPspRawUV is CPU-only scratch: the GE never sees it, so realloc is fine.
 		FLOAT* NewRaw = (FLOAT*)realloc( GPspRawUV, Pts * 2 * sizeof(FLOAT) );
 		if( !NewRaw ) return 0;
 		GPspRawUV = NewRaw;
-		// 24 bytes/vertex covers both T2F_V3F (20) and T2F_C4UB_V3F (24).
-		FLOAT* NewVtx = (FLOAT*)realloc( GPspVtx, Pts * 24 );
-		if( !NewVtx ) return 0;
-		GPspVtx = NewVtx;
 		GPspVtxMax = Pts;
 	}
 	return 1;
@@ -546,6 +751,21 @@ static UBOOL PspEnsureVtxBuffers( INT Pts )
 // a syscall exception; PPSSPP ignores the bad range, so it only ever fails on
 // the console. Set (and unset) every array explicitly.
 //
+
+//
+// pspgl faults on a 3-vertex GL_TRIANGLE_FAN on real hardware. Traced on a
+// PSP-2000: every fan with 4 or 5 vertices draws fine, and the very first
+// 3-vertex fan takes the console down inside glDrawArrays. PPSSPP draws it
+// happily, which is why it survived every emulator run.
+//
+// A 3-vertex fan is exactly one triangle, so GL_TRIANGLES is an identical
+// primitive without the bug.
+//
+static inline void PspDrawFan( INT N )
+{
+	glDrawArrays( N == 3 ? GL_TRIANGLES : GL_TRIANGLE_FAN, 0, N );
+}
+
 static UBOOL PspSetArrays( UBOOL bTex, UBOOL bColor, const void* Base, INT Stride )
 {
 	const BYTE* P = (const BYTE*)Base;
@@ -602,6 +822,8 @@ static void PspEmitFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 			Base += N;
 			continue;
 		}
+		GPspVtx = (FLOAT*)PspClaimVtx( N * 20 );
+		if( !GPspVtx ) { Base += N; continue; }
 		FLOAT* Out = GPspVtx;
 		for( INT i = 0; i < N; ++i )
 		{
@@ -614,7 +836,7 @@ static void PspEmitFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 			*Out++ = P.Z;
 		}
 		if( PspSetArrays( 1, 0, GPspVtx, 20 ) )
-			glDrawArrays( GL_TRIANGLE_FAN, 0, N );
+			PspDrawFan( N );
 		Base += N;
 	}
 }
@@ -713,6 +935,8 @@ static void PspEmitFacetLit( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 			Base += N;
 			continue;
 		}
+		GPspVtx = (FLOAT*)PspClaimVtx( N * 24 );
+		if( !GPspVtx ) { Base += N; continue; }
 		BYTE* Out = (BYTE*)GPspVtx;
 		for( INT i = 0; i < N; ++i )
 		{
@@ -741,7 +965,9 @@ static void PspEmitFacetLit( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 			Out += 24;
 		}
 		if( PspSetArrays( 1, 1, GPspVtx, 24 ) )
-			glDrawArrays( GL_TRIANGLE_FAN, 0, N );
+		{
+			PspDrawFan( N );
+		}
 		Base += N;
 	}
 }
@@ -754,9 +980,24 @@ void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurf
 
 #ifdef __PSP__
 	{
+		// BISECT: [PSP] VertexArrays=0 falls back to the stock immediate-mode
+		// renderer (glBegin/glVertex3f). Slower, but it isolates whether
+		// pspgl's client-array path is what dies on hardware -- every array
+		// draw goes through glDrawArrays, and both emitters fail at the same
+		// surface regardless of which one is used.
+		static INT PspVertexArrays = -1;
+		if( PspVertexArrays < 0 )
+		{
+			PspVertexArrays = 1;
+			GetConfigInt( "PSP", "VertexArrays", PspVertexArrays );
+			debugf( NAME_Log, "PSPPERF: vertex arrays = %s", PspVertexArrays ? "on" : "off" );
+		}
+
 		INT TotalPts = 0;
 		for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
 			TotalPts += Poly->NumPts;
+		if( !PspVertexArrays )
+			TotalPts = 0;   // fall through to the immediate-mode path below
 
 		if( TotalPts > 0 && PspEnsureVtxBuffers( TotalPts ) )
 		{
@@ -866,15 +1107,6 @@ void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurf
 #endif
 
 	// Draw texture.
-#ifdef PSP_CLEAR_TEST
-	// TEMPORARY EXPERIMENT -- pspgl buffers immediate-mode geometry into a
-	// fixed-size GU display list. UE1 submits a whole Unreal scene per frame in
-	// glBegin/glVertex3f form, and PPSSPP crashes walking sequentially off the
-	// end of a mapped region (fault address advances by 0x100 between runs),
-	// which is what an overrun list would look like. Flushing per surface
-	// forces pspgl to submit and start a fresh list.
-	glFlush();
-#endif
 	SetBlend( Surface.PolyFlags );
 	SetTexture( 0, *Surface.Texture, ( Surface.PolyFlags & PF_Masked ), 0.f );
 	glColor4f( 1.f, 1.f, 1.f, 1.f );
@@ -939,6 +1171,7 @@ void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurf
 			glDepthFunc( GL_LEQUAL );
 	}
 
+
 	// Draw fog.
 	if( Surface.FogMap )
 	{
@@ -987,14 +1220,12 @@ static UBOOL PspEnsureMeshBuffer( INT Pts )
 	// path, which handles an empty primitive harmlessly.
 	if( Pts < 3 )
 		return 0;
-	if( Pts > GPspMeshMax )
-	{
-		BYTE* NewBuf = (BYTE*)realloc( GPspMeshBuf, Pts * 24 );
-		if( !NewBuf ) return 0;
-		GPspMeshBuf = NewBuf;
-		GPspMeshMax = Pts;
-	}
-	return 1;
+	// Storage now comes from the GE-safe ring, claimed per draw; see
+	// PspClaimVtx. Reusing one realloc'd buffer let the GE read vertices we
+	// had already overwritten.
+	GPspMeshBuf = (BYTE*)PspClaimVtx( Pts * 24 );
+	GPspMeshMax = Pts;
+	return GPspMeshBuf != NULL;
 }
 
 static inline BYTE PspToByte( FLOAT V )
@@ -1050,7 +1281,7 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 				Out += 24;
 			}
 			if( PspSetArrays( 1, 1, GPspMeshBuf, 24 ) )
-				glDrawArrays( GL_TRIANGLE_FAN, 0, NumPts );
+				PspDrawFan( NumPts );
 		}
 		else
 #endif
@@ -1089,7 +1320,7 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 					Out += 16;
 				}
 				if( PspSetArrays( 0, 1, GPspMeshBuf, 16 ) )
-					glDrawArrays( GL_TRIANGLE_FAN, 0, NumPts );
+					PspDrawFan( NumPts );
 			}
 			else
 #endif
@@ -1262,21 +1493,6 @@ void UNOpenGLRenderDevice::SetSceneNode( FSceneNode* Frame )
 			Frame->XB != CurrentSceneNode.XB || Frame->YB != CurrentSceneNode.YB ||
 			Viewport->SizeX != CurrentSceneNode.SizeX || Viewport->SizeY != CurrentSceneNode.SizeY )
 	{
-#ifdef PSP_CLEAR_TEST
-		// TEMPORARY DIAGNOSTIC -- the forced clear shows only as a stripe, so
-		// print the numbers the viewport is actually working with.
-		{
-			static INT VpLog = 0;
-			if( VpLog < 4 )
-			{
-				debugf( NAME_Log, "PSPDIAG: viewport size=%dx%d frame X=%d Y=%d XB=%d YB=%d -> glViewport(%d,%d,%d,%d)",
-					Viewport->SizeX, Viewport->SizeY,
-					Frame->X, Frame->Y, Frame->XB, Frame->YB,
-					Frame->XB, Viewport->SizeY - Frame->Y - Frame->YB, Frame->X, Frame->Y );
-				++VpLog;
-			}
-		}
-#endif
 		glViewport( Frame->XB, Viewport->SizeY - Frame->Y - Frame->YB, Frame->X, Frame->Y );
 		CurrentSceneNode.X = Frame->X;
 		CurrentSceneNode.Y = Frame->Y;
@@ -1389,8 +1605,18 @@ void UNOpenGLRenderDevice::SetTexture( INT TMU, FTextureInfo& Info, DWORD PolyFl
 	Tex.VPan      = Info.Pan.Y + PanBias*Info.VScale;
 
 	// Account for all the impact on scale normalization.
+#ifdef __PSP__
+	// UploadTexture pads a sub-8 base mip up to 8x8 (see there). Normalised
+	// UV = texel-space * 1/(Scale*Size), so dividing by the PADDED size maps
+	// the real USize texels onto exactly the top-left fraction of the padded
+	// texture where they were placed. For textures already >= 8 this is the
+	// identity.
+	Tex.UMult = 1.f / (Info.UScale * static_cast<FLOAT>( Max( 8, Info.USize ) ));
+	Tex.VMult = 1.f / (Info.VScale * static_cast<FLOAT>( Max( 8, Info.VSize ) ));
+#else
 	Tex.UMult = 1.f / (Info.UScale * static_cast<FLOAT>(Info.USize));
 	Tex.VMult = 1.f / (Info.VScale * static_cast<FLOAT>(Info.VSize));
+#endif
 
 	// Find in cache.
 	QWORD NewCacheID = Info.CacheID;
@@ -1411,7 +1637,13 @@ void UNOpenGLRenderDevice::SetTexture( INT TMU, FTextureInfo& Info, DWORD PolyFl
 		Bind = BindMap.Add( NewCacheID, FCachedTexture() );
 		glGenTextures( 1, &Bind->Id );
 		TexAlloc.AddItem( Bind->Id );
+#ifdef __PSP__
+		Bind->Bytes = 0;
+#endif
 	}
+#ifdef __PSP__
+	Bind->LastFrame = GPspFrameCount;
+#endif
 
 	glActiveTexture( GL_TEXTURE0 + TMU );
 	glEnable( GL_TEXTURE_2D );
@@ -1423,15 +1655,31 @@ void UNOpenGLRenderDevice::SetTexture( INT TMU, FTextureInfo& Info, DWORD PolyFl
 		// New texture or it has changed, upload it.
 		Info.TextureFlags &= ~TF_RealtimeChanged;
 		UploadTexture( Info, ( PolyFlags & PF_Masked ), !OldBind );
+#ifdef __PSP__
+		if( !OldBind )
+		{
+			Bind->Bytes   = GPspLastUploadBytes;
+			GPspTexBytes += Bind->Bytes;
+			PspEvictTextures();
+			Bind = BindMap.Find( NewCacheID );   // Pairs may have moved
+		}
+#endif
 		// Set mip filtering if there are mips.
+#ifdef __PSP__
+		// Mip filtering only over levels that were really uploaded; the fill
+		// in UploadTexture makes the rest valid but they are placeholders.
+		const UBOOL HasMips = GPspLastUploadedMips > 1;
+#else
+		const UBOOL HasMips = Info.NumMips > 1;
+#endif
 		if( ( PolyFlags & PF_NoSmooth ) || ( NoFiltering && Info.Palette ) ) // TODO: This is set per poly, not per texture.
 		{
-			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, ( Info.NumMips > 1 ) ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST );
+			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, HasMips ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST );
 			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 		}
 		else
 		{
-			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, ( Info.NumMips > 1 ) ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR );
+			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, HasMips ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR );
 			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 		}
 	}
@@ -1571,6 +1819,47 @@ void UNOpenGLRenderDevice::ConvertTextureMipBGRA7777( const FMipmap* Mip, BYTE*&
 	}
 }
 
+#ifdef __PSP__
+//
+// Ported from the Vita build (NOpenGLESDrv.cpp): dynamic textures must not be
+// re-uploaded into the same memory the GPU may still be reading. vitaGL keeps
+// a pointer to the caller's data rather than copying it, so that port
+// allocates three buffers per dynamic texture and cycles through them on every
+// upload. pspgl hands the GE pointers the same way -- it flushes the range
+// with sceKernelDcacheWritebackInvalidateRange rather than taking a copy -- so
+// a single shared compose buffer is overwritten while the previous frame's
+// draw is still reading it.
+//
+// "Dynamic" is the Vita's test: TF_Realtime, or no palette (lightmaps and fog
+// maps are BGRA7777 and unpalettised), so it is always 4 bytes per pixel here.
+//
+enum { PSP_DYN_TEX_BUFS = 3 };
+static BYTE* GPspDynTex[PSP_DYN_TEX_BUFS] = { NULL, NULL, NULL };
+static INT   GPspDynTexSize = 0;
+static INT   GPspDynTexCur  = 0;
+
+static BYTE* PspRotateDynTex( const BYTE* Src, INT Bytes )
+{
+	if( Bytes <= 0 )
+		return NULL;
+	if( Bytes > GPspDynTexSize )
+	{
+		for( INT i = 0; i < PSP_DYN_TEX_BUFS; ++i )
+		{
+			BYTE* New = (BYTE*)realloc( GPspDynTex[i], Bytes );
+			if( !New )
+				return NULL;
+			GPspDynTex[i] = New;
+		}
+		GPspDynTexSize = Bytes;
+	}
+	BYTE* Dst = GPspDynTex[GPspDynTexCur];
+	GPspDynTexCur = ( GPspDynTexCur + 1 ) % PSP_DYN_TEX_BUFS;
+	appMemcpy( Dst, Src, Bytes );
+	return Dst;
+}
+#endif
+
 void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOOL NewTexture )
 {
 	guard(UNOpenGLRenderDevice::UploadTexture);
@@ -1590,6 +1879,13 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 
 	// Upload all mips.
 	INT UploadedMips = 0;
+#ifdef __PSP__
+	// What the last successful upload looked like, and the base level's size,
+	// for the mip-chain fill after the loop (see there).
+	BYTE*  LastBuf = NULL; INT LastW = 0, LastH = 0; GLenum LastFmt = 0, LastIF = 0;
+	INT    BaseW = 0, BaseH = 0;
+	GPspLastUploadBytes = 0;
+#endif
 	uclock(ImageCycles);
 	for( INT MipIndex = 0; MipIndex < Info.NumMips; ++MipIndex )
 	{
@@ -1609,14 +1905,79 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 		// errors and a stable frame loop. At 4x4 pspgl instead reports
 		// GL_INVALID_* for ~84% of uploads; below that it corrupts memory.
 		// UE1 supplies full chains down to 1x1, so the small levels must go.
+		// Sub-8 mips need care in BOTH directions. Uploading one raw corrupts
+		// the heap: pspgl sizes its allocation from USize*VSize but swizzles in
+		// whole 8x8 blocks, so a 2x2 upload writes past the buffer and the
+		// next free() dies (PPSSPP crash in _free_r). Skipping one leaves the
+		// texture with no data when the BASE mip is already small -- a 64x4
+		// lightmap logged uploaded=0, and 354 of them in one immediate-mode
+		// frame -- and the GE then reads garbage at draw time.
+		//
+		// So: skip the small tail of the chain as before, but PAD the base
+		// mip up to 8x8 with edge replication and upload that. SetTexture
+		// scales UMult/VMult by the same padded size, so the real texels land
+		// exactly where the UVs expect them. This is the Vita port's approach.
+		INT   UpW  = Mip->USize;
+		INT   UpH  = Mip->VSize;
+		UBOOL bPad = 0;
 		if( Mip->USize < 8 || Mip->VSize < 8 )
-			break;
+		{
+			if( MipIndex > 0 )
+				break;
+			bPad = 1;
+			UpW  = Max( 8, Mip->USize );
+			UpH  = Max( 8, Mip->VSize );
+		}
 #endif
 		// Convert texture if needed.
 		if( Info.Palette )
 			ConvertTextureMipI8( Mip, Info.Palette, Masked, UploadBuf, UploadFormat, InternalFormat );
 		else
 			ConvertTextureMipBGRA7777( Mip, UploadBuf, UploadFormat, InternalFormat );
+#ifdef __PSP__
+		if( bPad )
+		{
+			// Both converters emit 4 bytes/pixel, tightly packed at USize
+			// stride (UseHwPalette is off on PSP, so I8 expands to RGBA too).
+			// Copy into the top-left of an UpW x UpH image and replicate the
+			// last column and row outward, so clamped/filtered sampling at the
+			// edge sees the edge texel rather than black.
+			static BYTE* PadBuf = NULL;
+			static INT   PadCap = 0;
+			const INT Need = UpW * UpH * 4;
+			if( Need > PadCap )
+			{
+				BYTE* N = (BYTE*)realloc( PadBuf, Need );
+				if( N ) { PadBuf = N; PadCap = Need; }
+			}
+			if( PadBuf && PadCap >= Need )
+			{
+				const INT SrcW = Mip->USize, SrcH = Mip->VSize;
+				for( INT y = 0; y < UpH; ++y )
+				{
+					const INT sy = Min( y, SrcH - 1 );
+					const DWORD* SrcRow = (const DWORD*)UploadBuf + sy * SrcW;
+					DWORD*       DstRow = (DWORD*)PadBuf + y * UpW;
+					for( INT x = 0; x < UpW; ++x )
+						DstRow[x] = SrcRow[ Min( x, SrcW - 1 ) ];
+				}
+				UploadBuf = PadBuf;
+			}
+			else
+			{
+				UpW = Mip->USize; UpH = Mip->VSize;   // allocation failed: upload raw
+			}
+		}
+
+		// See PspRotateDynTex: give the GE its own copy of anything that gets
+		// re-uploaded, so the next upload does not overwrite it mid-draw.
+		if( ( Info.TextureFlags & TF_Realtime ) || !Info.Palette )
+		{
+			BYTE* Rotated = PspRotateDynTex( UploadBuf, UpW * UpH * 4 );
+			if( Rotated )
+				UploadBuf = Rotated;
+		}
+#endif
 #ifdef __PSP__
 		// pspgl identifies as "OpenGL ES-CM 1.1" and enforces the GLES1 rule
 		// that internalformat must be an unsized enum *equal* to format. The
@@ -1643,37 +2004,39 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 		++GPspUploadCount;
 #endif
 		if( NewTexture )
-			glTexImage2D( GL_TEXTURE_2D, MipIndex, InternalFormat, Mip->USize, Mip->VSize, 0, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );
+			glTexImage2D( GL_TEXTURE_2D, MipIndex, InternalFormat, UpW, UpH, 0, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );
 		else
-			glTexSubImage2D( GL_TEXTURE_2D, MipIndex, 0, 0, Mip->USize, Mip->VSize, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );
-		++UploadedMips;
-#ifdef PSP_CLEAR_TEST
-		// TEMPORARY DIAGNOSTIC -- does pspgl actually accept these uploads?
-		// Geometry renders solid black, so either the texels never arrive or
-		// the format is being rejected. Report the first few, plus every error.
+			glTexSubImage2D( GL_TEXTURE_2D, MipIndex, 0, 0, UpW, UpH, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );
+#ifdef __PSP__
+		if( NewTexture && glGetError() != GL_NO_ERROR )
 		{
-			static INT UpLog = 0, ErrLog = 0, UpTotal = 0, ErrTotal = 0;
-			const GLenum Err = glGetError();
-			++UpTotal;
-			// Separate budgets so a flood of successes cannot crowd out the
-			// first errors. Both capped: Logf costs 4KB of stack and this sits
-			// deep in the render recursion.
-			UBOOL WantLog;
-			if( Err != GL_NO_ERROR ) { ++ErrTotal; WantLog = ( ErrLog++ < 15 ); }
-			else                     { WantLog = ( UpLog  <  15 ); }
-			// Bounded running totals, so VRAM exhaustion is visible even after
-			// the per-line budgets are spent.
-			if( ( UpTotal % 250 ) == 0 )
-				debugf( NAME_Log, "PSPDIAG: uploads=%d errors=%d", UpTotal, ErrTotal );
-			if( WantLog )
+			// pspgl failed the upload -- GL_OUT_OF_MEMORY once the heap is
+			// full -- and leaves the texture object with NO image: every level
+			// pointer 0. Drawing with it makes the GE fetch texels from address
+			// 0 and hangs the console (found by decoding the killing display
+			// list under PSPLink). Give it an 8x8 placeholder instead, which is
+			// 256 bytes and will fit where 256KB did not.
+			if( PspUploadPlaceholder() )
 			{
-				debugf( NAME_Log, "PSPDIAG: upload #%d mip=%d %dx%d int=0x%04x fmt=0x%04x pal=%d err=0x%04x freemem=%u maxblock=%u",
-					UpLog, MipIndex, Mip->USize, Mip->VSize, (unsigned)InternalFormat, (unsigned)UploadFormat,
-					Info.Palette ? 1 : 0, (unsigned)Err,
-					(unsigned)sceKernelTotalFreeMemSize(), (unsigned)sceKernelMaxFreeMemSize() );
-				++UpLog;
+				UploadedMips = 1;
+				LastBuf = (BYTE*)GPspPlaceholder; LastW = LastH = 8; LastFmt = GL_RGBA; LastIF = GL_RGBA;
+				BaseW = BaseH = 8;
+				GPspLastUploadBytes = 8 * 8 * 4;
 			}
+			if( ++GPspUploadFailed <= 20 || ( GPspUploadFailed % 100 ) == 0 )
+				debugf( NAME_Log, "PSPTEX: upload FAILED (%ix%i level %i), placeholder used; %i failures, %i KB resident; %s",
+					UpW, UpH, MipIndex, GPspUploadFailed, GPspTexBytes / 1024, PspHeapStr() );
+			break;
 		}
+#endif
+		++UploadedMips;
+#ifdef __PSP__
+		LastBuf = UploadBuf; LastW = UpW; LastH = UpH; LastFmt = UploadFormat; LastIF = InternalFormat;
+		if( NewTexture )
+			GPspLastUploadBytes += UpW * UpH * ( ( UploadFormat == GL_COLOR_INDEX8_EXT || UploadFormat == GL_COLOR_INDEX ) ? 1 : 4 );
+		if( MipIndex == 0 ) { BaseW = UpW; BaseH = UpH; }
+		if( bPad )
+			break;   // a padded base mip stands alone; its sub-mips would be sub-8 too
 #endif
 	}
 	uunclock(ImageCycles);
@@ -1683,8 +2046,53 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 	// the mip chain is TRUNCATED. Without capping GL_TEXTURE_MAX_LEVEL the
 	// texture is incomplete and therefore unsamplable -- which is why anything
 	// relying on mipmapped sampling came out blank.
-	if( UploadedMips > 0 )
-		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, UploadedMips - 1 );
+#ifdef __PSP__
+	// A texture that uploaded nothing (no base mip data) would leave pspgl's
+	// object empty and the GE reading address 0 at draw time; same cure as a
+	// failed upload.
+	if( UploadedMips == 0 && NewTexture && PspUploadPlaceholder() )
+	{
+		UploadedMips = 1;
+		LastBuf = (BYTE*)GPspPlaceholder; LastW = LastH = 8; LastFmt = GL_RGBA; LastIF = GL_RGBA;
+		BaseW = BaseH = 8;
+		GPspLastUploadBytes = 8 * 8 * 4;
+		debugf( NAME_Log, "PSPTEX: %ix%i uploaded no mips, placeholder used", Info.Mips[0]->USize, Info.Mips[0]->VSize );
+	}
+#endif
+	// THE hardware killer, found with PSPLink by decoding the display list
+	// that took the console down. pspgl tells the GE how many mip levels a
+	// texture has from the BASE level's size alone (max(log2 w, log2 h) + 1)
+	// and points every level we did not upload at address 0. It ignores
+	// GL_TEXTURE_MAX_LEVEL and its completeness check is compiled out. We
+	// deliberately stop the chain early (sub-8 mips, see above), so with a
+	// mipmap min filter the first small textured polygon makes the GE fetch
+	// texels from physical address 0. PPSSPP reads zeros there; the real PSP
+	// hangs its bus and powers off. So give every level the GE may sample a
+	// valid image: repeat the smallest real level down to the announced end.
+	// Placeholders only; they are never re-uploaded for realtime textures.
+	if( NewTexture && UploadedMips > 0 && LastBuf )
+	{
+		INT MaxLvl = 0;
+		while( ( 1 << ( MaxLvl + 1 ) ) <= Max( BaseW, BaseH ) )
+			++MaxLvl;
+		// 8x8 placeholders, never the last level's full size: a lone 256x256
+		// level would otherwise get eight 256KB copies (2MB) and blow the heap.
+		// Every real level is >= 8x8, so LastBuf holds at least one 8x8 block;
+		// with a mipmap filter the GE only reaches these when the texture is
+		// under 8 pixels on screen, and single-level textures never sample them.
+		const INT FillBpp = ( LastFmt == GL_COLOR_INDEX8_EXT || LastFmt == GL_COLOR_INDEX ) ? 1 : 4;
+		for( INT L = UploadedMips; L <= MaxLvl; ++L )
+		{
+			glTexImage2D( GL_TEXTURE_2D, L, LastIF, 8, 8, 0, LastFmt, GL_UNSIGNED_BYTE, (void*)LastBuf );
+			if( glGetError() != GL_NO_ERROR )
+			{
+				debugf( NAME_Log, "PSPTEX: mip fill FAILED at level %i", L );
+				break;
+			}
+			GPspLastUploadBytes += 8 * 8 * FillBpp;
+		}
+	}
+	GPspLastUploadedMips = UploadedMips;
 #endif
 
 	unguard;

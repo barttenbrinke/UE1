@@ -1140,6 +1140,12 @@ void FGlobalPlatform::WriteBinary( const void* Data, INT Length, EName Event )
 			OutputDebugString( (char*)Data );
 			OutputDebugString( "\n" );
 #endif
+#ifdef PSP_PSPLINK
+			// PSPLink streams the module's stdout into pspsh over USB, so this
+			// is a live, ordered log that survives any crash -- no card cycle.
+			printf( "%s: %s\n", *EventName, (char*)Data );
+			fflush( stdout );
+#endif
 			if( GLogFile )
 			{
 				appFwrite( *EventName, strlen(*EventName), 1, GLogFile );
@@ -1147,14 +1153,22 @@ void FGlobalPlatform::WriteBinary( const void* Data, INT Length, EName Event )
 				appFwrite( Data, strlen((char*)Data), 1, GLogFile );
 				appFwrite( "\n", 1, 1, GLogFile );
 #ifdef __PSP__
-				// Flush every line. A kernel fault reboots the console
-				// instantly, taking the buffered tail of the log with it --
-				// and that tail is exactly the part that says what went wrong.
-				// Costs a Memory Stick write per line, which is a fair trade
-				// while the port is still crashing on hardware.
-#ifndef __PSP__
-				fflush( GLogFile );
-#endif
+				// Push the line onto the card. appFwrite already bypasses
+				// stdio, but the Memory Stick driver keeps its own write-back
+				// cache, and a fault takes the console down instantly -- so
+				// without this the tail of the log is lost, which is exactly
+				// the part that says what went wrong. A crash before the first
+				// sync loses the file entirely.
+				//
+				// Sync every line while the log is short (startup, where we
+				// cannot afford to lose anything), then every 32nd once the
+				// volume picks up.
+				{
+					static INT PspLines = 0;
+					++PspLines;
+					if( PspLines <= 1000 || ( PspLines % 32 ) == 0 )
+						PspLogSync();
+				}
 #endif
 			}
 			if( GLogHook )

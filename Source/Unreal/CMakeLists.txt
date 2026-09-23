@@ -96,6 +96,12 @@ endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE UNREAL_EXPORTS UPACKAGE_NAME=${PROJECT_NAME})
 
+if(PSP AND PSPLINK)
+  # Route our glDrawArrays calls through the PSPLink-only freeze hook in
+  # NOpenGLDrv.cpp (see __wrap_glDrawArrays there).
+  target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=glDrawArrays,--wrap=sceGeListEnQueue,--wrap=sceGeListSync,--wrap=sceGeDrawSync)
+endif()
+
 if(PSP)
   # create_pbp_file passes MEMSIZE=1, which claims the extra RAM present on the
   # PSP-2000 and later. Unreal will need it.

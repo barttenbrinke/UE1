@@ -205,6 +205,15 @@ else()
     # for the same reason.
     add_compile_options(-g -fno-optimize-sibling-calls)
 
+    # PSPLink mode: the log is also written to stdout, which PSPLink's tty
+    # driver streams into pspsh over USB. That turns a renderer crash from a
+    # card cycle into a live tail plus an exception dump with a real EPC.
+    # Off by default; the card build is unchanged.
+    option(PSPLINK "Mirror the log to stdout for PSPLink/pspsh" OFF)
+    if(PSPLINK)
+      add_definitions(-DPSP_PSPLINK=1)
+    endif()
+
     # Measured and rejected: -O3 and -ffast-math made no difference at all
     # (70/54/50/51 ms vs 70/55/50/51 ms). Not worth -ffast-math's risk of
     # subtle float behaviour changes, so we stay on -O2 with IEEE semantics.

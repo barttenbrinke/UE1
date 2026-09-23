@@ -68,6 +68,8 @@ LightFX=1         ; torch/fire/water light waver effects
 VertexLight=1     ; fold lightmap into vertex colour: one geometry pass, not two
 LightScale=150    ; VertexLight brightness %, 100 matches the two-pass original
 Gamma=130         ; base texture gamma %, 100 = off
+VertexArrays=1    ; 0 = stock immediate-mode renderer (bisect switch)
+TextureBudgetMB=8 ; resident GL texture memory before least-recently-used eviction; the heap is ~38MB and Unreal's own data takes ~26MB
 PSPCFG
 fi
 
