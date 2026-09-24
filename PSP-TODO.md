@@ -62,7 +62,13 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       Media Engine music (module bytes + libxmp's copy, ~7 MB). Next:
       UMusic::Data freed after xmp_load (built, untested), then an A/B on
       the PSP with `-MUSICME=0` to size the rest of the music cost.
-      Bart to try a botmatch from the menu on 7846f886. Background: the 1998 engine leaned
+      XMB boot crash of 7846f886 with lazy loading on: NOT the lazy
+      loading itself -- my low-memory probe called mallinfo() on every
+      large allocation and newlib's bin walk raced the mixer thread
+      (fixed in 1b130a3, probe now opt-in). Card currently runs 7846f886
+      with the three Free*Data switches OFF in the ini; staged for the
+      next PSPLink session: card af288806 (fix + music bytes freed) with
+      the lazy-on ini. Then: level one, and a botmatch from the menu. Background: the 1998 engine leaned
       on the PC's virtual memory; retail patches later added TLazyArray
       for mips and sounds, which this source snapshot predates.
 
