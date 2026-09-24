@@ -1010,6 +1010,12 @@ UBOOL UNOpenALAudioSubsystem::PlaySound( AActor* Actor, INT Id, USound* Sound, F
 		}
 	}
 
+#ifdef __PSP__
+	// Deferred sound: its data was dropped at load; re-read the object, which
+	// registers (uploads) it on the way (USound::Serialize).
+	if( Voice && Sound && !Sound->Handle && Sound->GetLinker() )
+		appReloadObject( Sound );
+#endif
 	// If we ran out of voices or the sound is too low priority, bail.
 	if( !Voice || !Sound || !Sound->Handle )
 		return false;

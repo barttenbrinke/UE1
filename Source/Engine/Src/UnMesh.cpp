@@ -44,6 +44,22 @@ void UMesh::Serialize( FArchive& Ar )
 	Ar << AndFlags << OrFlags;
 	Ar << Scale << Origin << RotOrigin;
 	Ar << CurPoly << CurVertex;
+#ifdef __PSP__
+	// Every monster and weapon class references its mesh, so a level loads
+	// all ~107 of them (6.6 MB) while drawing a handful. Drop the render
+	// data here and re-read it (appReloadObject) the first time the mesh is
+	// drawn; it then stays. Bounds and animation tables stay resident for
+	// collision and script.   [PSP] FreeMeshData=1
+	if( Ar.IsLoading() && !GPspReloading && GetLinker() )
+	{
+		static INT FreeData = -1;
+		if( FreeData < 0 ) { FreeData = 1; GetConfigInt( "PSP", "FreeMeshData", FreeData ); }
+		if( FreeData )
+		{
+			Verts.Empty(); Tris.Empty(); Connects.Empty(); VertLinks.Empty();
+		}
+	}
+#endif
 
 	unguard;
 }
@@ -143,6 +159,16 @@ void UMesh::GetFrame
 )
 {
 	guard(UMesh::GetFrame);
+#ifdef __PSP__
+	if( !Verts.Num() && FrameVerts > 0 && GetLinker() )
+	{
+		if( !appReloadObject( this ) || !Verts.Num() )
+		{
+			debugf( NAME_Warning, "UMesh::GetFrame: could not reload %s", GetName() );
+			return;
+		}
+	}
+#endif
 
 	// Create or get cache memory.
 	FCacheItem* Item;

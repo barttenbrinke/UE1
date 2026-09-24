@@ -73,6 +73,19 @@ void USound::Serialize( FArchive& Ar )
 
 			// Register it.
 			OriginalSize = Data.Num();
+#ifdef __PSP__
+			// All 186 sounds of a deathmatch level went into OpenAL at load
+			// (5 MB). Register on first play instead (the audio driver reloads
+			// this object then, with GPspReloading set, and lands here).
+			//   [PSP] FreeSoundData=1
+			static INT Defer = -1;
+			if( Defer < 0 ) { Defer = 1; GetConfigInt( "PSP", "FreeSoundData", Defer ); }
+			if( Defer && !GPspReloading && GetLinker() && Audio && !GIsEditor )
+			{
+				Data.Empty();
+			}
+			else
+#endif
 			if( Audio && !GIsEditor )
 				Audio->RegisterSound( this );
 		}
