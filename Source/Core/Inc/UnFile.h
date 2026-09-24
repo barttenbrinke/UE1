@@ -187,6 +187,12 @@ CORE_API void VARARGS appThrowf( const char* Fmt, ... );
 #if defined(__vita__) || ( defined(__PSP__) && !defined(PSP_KEEP_UCLOCK) )
 #define uclock(Timer)
 #define uunclock(Timer)
+#elif defined(__PSP__)
+// No 34-cycle calibration: appCycles() ticks in microseconds here (SDL's
+// performance counter), so the stock correction subtracted 34us per stop and
+// drove every busy timer negative.
+#define uclock(Timer)   {Timer -= appCycles();}
+#define uunclock(Timer) {Timer += appCycles();}
 #else
 #define uclock(Timer)   {Timer -= appCycles();}
 #define uunclock(Timer) {Timer += appCycles()-34;}

@@ -25,12 +25,13 @@ pkill -f PPSSPPSDL 2>/dev/null || true; sleep 1
 sed -i '' 's|^MaxFPS=.*|MaxFPS=20         ; frame cap; GetMaxTickRate() returns 0 in single player|' "$P/System/Unreal.ini"
 
 echo "build $(md5 -q "$EBOOT" | cut -c1-8), ${SECS}s uncapped, $(git -C "$HERE" log --oneline -1 | cut -c1-60)"
-printf "%7s %6s %7s | %s\n" "t(s)" "fps" "ms/frm" "engine ms per 100 frames (illum occl mesh polyv) | renderer ms (image complex gouraud tile)"
+printf "%7s %6s %7s | %s\n" "t(s)" "fps" "ms/frm" "engine ms/100 frames (illum occl mesh polyv) | occl split (clip raster span) | getframe | renderer (image complex gouraud tile)"
 awk '
   /PSPPERF: 100 frames in/ { t+=$6; fps=$8; ms=$10; sub(/\(/,"",ms); tt=t }
   /PSPPERF:   renddev/ { img=$9; cx=$11; gr=$13; tl=$15 }
-  /PSPPERF:   engine:/ { il=$5; oc=$7; me=$9; pv=$11;
-     printf "%7.1f %6s %7s | %6s %6s %6s %6s | %6s %6s %6s %6s\n", tt, fps, ms, il, oc, me, pv, img, cx, gr, tl;
+  /PSPPERF:   engine:/ { il=$5; oc=$7; me=$9; pv=$11 }
+  /PSPPERF:   occlusion:/ { cl=$5; ra=$7; sp=$9; gf=$15;
+     printf "%7.1f %6s %7s | %6s %6s %6s %6s | %6s %6s %6s | %6s | %6s %6s %6s %6s\n", tt, fps, ms, il, oc, me, pv, cl, ra, sp, gf, img, cx, gr, tl;
      if (fps+0 < min || min==0) { min=fps+0; tmin=tt } n++; sum+=fps }
   END { if (n) printf "intervals %d, mean %.1f fps, worst %.1f fps at t=%.0fs\n", n, sum/n, min, tmin }
 ' "$P/System/Unreal.log"
