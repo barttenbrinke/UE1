@@ -1,6 +1,7 @@
 #include "SDL2/SDL.h"
 #ifdef __PSP__
 #include <pspsysmem.h>
+#include <pspthreadman.h>   // per-thread run clocks in the PSPPERF report
 #include <malloc.h>
 #include "glad_psp.h"
 #else
@@ -124,6 +125,7 @@ static INT GPspUploadFailed     = 0;
 static INT GPspUpFirst = 0, GPspUpRealtime = 0, GPspUpBig = 0;   // per report interval
 static INT GPspUpBytes = 0;                                       // bytes handed to GL per interval
 #include <pspsysmem.h>
+#include <pspthreadman.h>   // per-thread run clocks in the PSPPERF report
 // Heap picture for the log: newlib arena in use / free, plus what the kernel
 // still has outside the heap. Cheap; used in periodic reports and on failures.
 // 8x8 mid-grey, 256 bytes: what a texture gets when pspgl could not take the
@@ -651,6 +653,36 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				(FLOAT)Elapsed, (FLOAT)( 100.0 / Max( Elapsed, (DOUBLE)0.001 ) ),
 				(FLOAT)( Elapsed * 10.0 ),
 				(unsigned)GPspUploadCount, (unsigned)( GPspUploadCount - GPspUploadLast ) );
+			{
+				// Where the CPU went, per thread, over this interval: the kernel's
+				// run clocks (microseconds) for every thread, as a share of wall
+				// time. Says whether the audio threads are worth moving to the ME.
+				static SceUID Ids[32]; static u64 Last[32]; static int Count = -1;
+				static DOUBLE LastWall = 0.0;
+				const DOUBLE Wall = appSeconds();
+				if( Count < 0 )
+				{
+					Count = 0;
+					sceKernelGetThreadmanIdList( SCE_KERNEL_TMID_Thread, Ids, 32, &Count );
+					for( int k=0; k<Count; ++k ) Last[k] = 0;
+				}
+				if( LastWall > 0.0 && Wall > LastWall )
+				{
+					char Line[256]; INT L = 0;
+					for( int k=0; k<Count && L < 200; ++k )
+					{
+						SceKernelThreadInfo Info; appMemset( &Info, 0, sizeof(Info) ); Info.size = sizeof(Info);
+						if( sceKernelReferThreadStatus( Ids[k], &Info ) < 0 ) continue;
+						const u64 Run = ( (u64)Info.runClocks.hi << 32 ) | Info.runClocks.low;
+						const FLOAT Pct = (FLOAT)( (DOUBLE)( Run - Last[k] ) / 1000000.0 / ( Wall - LastWall ) * 100.0 );
+						Last[k] = Run;
+						if( Pct >= 0.5f )
+							L += appSprintf( Line + L, "%s %.0f%% ", Info.name, Pct );
+					}
+					debugf( NAME_Log, "PSPPERF:   cpu by thread: %s", Line );
+				}
+				LastWall = Wall;
+			}
 			debugf( NAME_Log, "PSPPERF:   textures %i KB resident in %i cached, %i upload failures; %s", GPspTexBytes / 1024, BindMap.Size(), GPspUploadFailed, PspHeapStr() );
 			debugf( NAME_Log, "PSPPERF:   uploads: %i first-time, %i realtime re-uploads, %i of them >=256x256, %i KB moved, hw palette %s",
 				GPspUpFirst, GPspUpRealtime, GPspUpBig, GPspUpBytes / 1024, UseHwPalette ? "on" : "off" );

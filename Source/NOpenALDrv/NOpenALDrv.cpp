@@ -803,7 +803,11 @@ void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 	if( Sound->Handle )
 		return;
 
-	check( Sound->Data.Num() );
+	if( !Sound->Data.Num() )
+	{
+		debugf( NAME_Warning, "RegisterSound: `%s` has no data (freed after a previous upload)", Sound->GetName() );
+		return;
+	}
 
 	FWaveModInfo WaveInfo;
 	if( !WaveInfo.ReadWaveInfo( Sound->Data ) )
@@ -833,6 +837,17 @@ void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 	}
 
 	alBufferData( Buf, Format, (const void*)WaveInfo.SampleDataStart, WaveInfo.SampleDataSize, *WaveInfo.pSamplesPerSec );
+#ifdef __PSP__
+	// OpenAL now holds the samples; the engine's copy is dead weight on a
+	// console with ~38MB. Freed unless the ini says otherwise. A later
+	// re-registration (audio restart) finds Data empty and skips the sound.
+	{
+		static INT FreeData = -1;
+		if( FreeData < 0 ) { FreeData = 1; GetConfigInt( "PSP", "FreeSoundData", FreeData ); }
+		if( FreeData )
+			Sound->Data.Empty();
+	}
+#endif
 
 	Sound->Handle = (void*)Buf;
 	Sound->Looping = ( WaveInfo.SampleLoopsNum != 0 ); // the only indication of looping in this version of UE1
