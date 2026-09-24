@@ -49,20 +49,17 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 - [ ] Media Engine, next candidates now that the bridge works: OpenAL's
       software mixer (audioOutput thread, priority 22 on the main CPU), or
       the mesh pass once its CPU share is understood.
-- [~] Botmatch "out of memory" (2026-09-24 evening): package texture
-      texels are now dropped as they load (UTexture::Serialize; the driver
-      re-reads them via appReloadObject for the first upload) and sound
-      samples are freed once OpenAL holds them. Measured over PSPLink with
-      `./Unreal.prx DmRadikus.unr?Game=UnrealI.DeathMatchGame`: the map now
-      LOADS on the PSP (22.9 s) and renders at 19.6 fps -- with 138 KB of
-      heap free, so in-game allocations can still fail. The PSP's heap
-      reaches ~44 MB. The object list after load accounts for only ~12 MB
-      (meshes 6.6, level geometry 1.6; the "Sound" line reports original
-      sizes); ~30 MB sit outside UObjects: OpenAL sample copies, the music
-      module, GCache (CacheSizeMegs), memory stacks, file windows, pspgl,
-      allocator overhead. Next: measure those by disabling subsystems
-      ([Engine.Engine] AudioDevice= empty in the emulator), then trim
-      the biggest. `[PSP] MemDump=1` lists objects after each load.
+- [~] Botmatch "out of memory": mesh render data (Verts/Tris/Connects/
+      VertLinks) and sound uploads are now lazy, like the texture texels:
+      dropped at load, re-read from the package on first draw / first
+      play. Emulator DmRadikus load: heap 44.0 -> 32.0 MB (was 140 KB from
+      the ceiling on the PSP). `[PSP] FreeMeshData/FreeSoundData/
+      FreeTextureData` turn each off. Boot crash of the first texture
+      version (procedural textures reading freed source texels) fixed by
+      PspEnsureTexels + TF_PspPinned. To verify on the PSP: boot, level
+      one, a botmatch from the menu. Background: the 1998 engine leaned
+      on the PC's virtual memory; retail patches later added TLazyArray
+      for mips and sounds, which this source snapshot predates.
 
 ## Rejected on hardware numbers (do not retry)
 
