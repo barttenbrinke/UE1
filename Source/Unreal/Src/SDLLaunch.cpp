@@ -184,6 +184,7 @@ extern "C" { int sce_newlib_heap_kb_size = -1024; }
 #define PSP_GPROF_SECONDS 120.0
 #endif
 #endif
+#include <pspthreadman.h>
 static char GRootPath[MAX_PATH] = "ms0:/" SYSTEM_PATH;
 
 // NOTE: a pspDebugInstallErrorHandler() crash handler was tried here and does
@@ -339,6 +340,34 @@ void MainLoop( UEngine* Engine )
 
 	GIsRunning = 1;
 	DOUBLE OldTime = appSeconds();
+#ifdef __PSP__
+	// Audio glitches on hardware come from scheduling, not buffering: the PSP
+	// runs threads strictly by priority, and a long frame on the main thread
+	// starves the mixer and the music thread if they are not above it. Log
+	// every thread's priority once, then lower the main thread by
+	// [PSP] MainThreadDrop (default 4; 0 leaves it alone). Lower number =
+	// higher priority on the PSP.
+	{
+		SceUID Ids[64]; int Count = 0;
+		if( sceKernelGetThreadmanIdList( SCE_KERNEL_TMID_Thread, Ids, 64, &Count ) >= 0 )
+		{
+			for( int i = 0; i < Count; ++i )
+			{
+				SceKernelThreadInfo Info; appMemset( &Info, 0, sizeof(Info) ); Info.size = sizeof(Info);
+				if( sceKernelReferThreadStatus( Ids[i], &Info ) >= 0 )
+					debugf( NAME_Log, "PSPTHREAD: %-24s priority %3d stack %6dK", Info.name, Info.currentPriority, (int)( Info.stackSize / 1024 ) );
+			}
+		}
+		INT Drop = 4;
+		GetConfigInt( "PSP", "MainThreadDrop", Drop );
+		const int Cur = sceKernelGetThreadCurrentPriority();
+		if( Drop > 0 && Cur + Drop < 120 )
+		{
+			sceKernelChangeThreadPriority( sceKernelGetThreadId(), Cur + Drop );
+			debugf( NAME_Log, "PSPTHREAD: main thread priority %d -> %d so audio threads preempt it", Cur, sceKernelGetThreadCurrentPriority() );
+		}
+	}
+#endif
 	while( GIsRunning && !GIsRequestingExit )
 	{
 		// Update the world.

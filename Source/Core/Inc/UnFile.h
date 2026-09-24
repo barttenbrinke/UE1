@@ -311,8 +311,18 @@ CORE_API INT appStrncmp( const char* String1, const char* String2, INT Num );
 CORE_API void* appLargeMemset( void* Dest, int C, INT Count );
 CORE_API void* appLargeMemcpy( void* Dest, const void* Src, INT Count );
 CORE_API void* appMemmove( void* Dest, const void* Src, INT Count );
+#ifdef __PSP__
+// Inline over the compiler builtins: the script VM reads every 4-byte operand
+// through appMemcpy (the unaligned-safe form), and as an out-of-line call that
+// was 1.37M calls and 4% of the frame in the hardware profile. The builtin
+// turns a constant-size copy into plain loads (lwl/lwr for the unaligned
+// case) and still calls memcpy for the rest.
+inline void  appMemset( void* Dest, int C, INT Count )              { __builtin_memset( Dest, C, Count ); }
+inline void* appMemcpy( void* Dest, const void* Src, INT Count )    { return __builtin_memcpy( Dest, Src, Count ); }
+#else
 CORE_API void  appMemset( void* Dest, int C, INT Count );
 CORE_API void* appMemcpy( void* Dest, const void* Src, INT Count );
+#endif
 
 CORE_API INT   appMemcmp( const void* Buf1, const void* Buf2, INT Count );
 CORE_API const char* appSpc( int Num );

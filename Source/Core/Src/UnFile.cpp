@@ -1341,6 +1341,7 @@ CORE_API void* appMemmove( void* Dest, const void* Src, INT Count )
 	return memmove( Dest, Src, Count );
 }
 
+#ifndef __PSP__   // inline in UnFile.h on PSP
 CORE_API void  appMemset( void* Dest, int C, INT Count )
 {
 	memset( Dest, C, Count );
@@ -1350,6 +1351,7 @@ CORE_API void* appMemcpy( void* Dest, const void* Src, INT Count )
 {
 	return memcpy( Dest, Src, Count );
 }
+#endif
 
 
 
