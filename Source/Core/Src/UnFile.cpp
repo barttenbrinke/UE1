@@ -225,6 +225,21 @@ CORE_API void appDumpAllocs( FOutputDevice* Out )
 #endif
 	unguard;
 }
+#ifdef __PSP__
+#include <malloc.h>
+#include <pspsysmem.h>
+// Heap picture for the out-of-memory message: newlib arena in use / free,
+// what the kernel still has outside the arena, and its largest block.
+static const char* PspHeapState()
+{
+	static char Buf[160];
+	struct mallinfo M = mallinfo();
+	appSprintf( Buf, "heap used %iKB free %iKB (arena %iKB), kernel free %iKB largest %iKB",
+		M.uordblks / 1024, M.fordblks / 1024, M.arena / 1024,
+		sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024 );
+	return Buf;
+}
+#endif
 CORE_API void* appMalloc( INT Size, const char* Tag )
 {
 	guard(appMalloc);
@@ -236,7 +251,7 @@ CORE_API void* appMalloc( INT Size, const char* Tag )
 	// check() is compiled out in release; a silent NULL here surfaced as a
 	// null-pointer crash deep inside level loading. Fail loudly instead.
 	if( !Ptr )
-		appErrorf( "Out of memory: %i bytes (%s)", Size, Tag ? Tag : "?" );
+		appErrorf( "Out of memory: %i bytes (%s); %s", Size, Tag ? Tag : "?", PspHeapState() );
 #endif
 
 #if CHECK_ALLOCS
@@ -308,7 +323,7 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 	{
 		void* Result = realloc( Ptr, NewSize );
 		if( !Result && NewSize > 0 )
-			appErrorf( "Out of memory: realloc %i bytes (%s)", NewSize, Tag ? Tag : "?" );
+			appErrorf( "Out of memory: realloc %i bytes (%s); %s", NewSize, Tag ? Tag : "?", PspHeapState() );
 		return Result;
 	}
 #else
