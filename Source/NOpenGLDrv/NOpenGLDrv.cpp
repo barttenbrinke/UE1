@@ -1179,8 +1179,11 @@ static BYTE GPspLightLUT[128];
 static INT  GPspLightLUTScale = -1;
 
 // LightScale is linear, so lifting dark corners with it also saturates the
-// already-bright surfaces. LightGamma bends the curve instead: a power law on
-// the scaled value, so darks and midtones rise while the top end stays put.
+// already-bright surfaces. LightGamma bends the curve instead -- but only at
+// the dark end: the power-law lift is weighted by (1-L)^2, so black corners
+// get the full lift, mid-tones a quarter of it and highlights none. A plain
+// power law (the first version) raised everything and washed out the
+// contrast that makes a dark vent shaft with a few green lights readable.
 //   [PSP] LightGamma=100   ; percent; 100 = linear (off), higher = brighter darks
 static void PspBuildLightLUT( INT ScalePercent )
 {
@@ -1190,8 +1193,10 @@ static void PspBuildLightLUT( INT ScalePercent )
 	const FLOAT Exponent = 100.f / (FLOAT)LightGamma;
 	for( INT i = 0; i < 128; ++i )
 	{
-		const FLOAT Lin = Clamp( (FLOAT)( i * 4 * ScalePercent ) / 100.f, 0.f, 255.f ) / 255.f;
-		GPspLightLUT[i] = (BYTE)Clamp( appRound( 255.f * appPow( Lin, Exponent ) ), 0, 255 );
+		const FLOAT Lin  = Clamp( (FLOAT)( i * 4 * ScalePercent ) / 100.f, 0.f, 255.f ) / 255.f;
+		const FLOAT Lift = appPow( Lin, Exponent ) - Lin;          // what a full power law would add
+		const FLOAT W    = ( 1.f - Lin ) * ( 1.f - Lin );           // shadows only
+		GPspLightLUT[i] = (BYTE)Clamp( appRound( 255.f * ( Lin + Lift * W ) ), 0, 255 );
 	}
 	GPspLightLUTScale = ScalePercent;
 	debugf( NAME_Log, "PSPPERF: light LUT scale %d%% gamma %d%%", ScalePercent, LightGamma );
