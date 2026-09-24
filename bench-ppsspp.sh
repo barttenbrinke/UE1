@@ -18,6 +18,10 @@ PPSSPP=/Applications/PPSSPPSDL.app/Contents/MacOS/PPSSPPSDL
 pkill -f PPSSPPSDL 2>/dev/null || true; sleep 1
 cp "$EBOOT" "$P/EBOOT.PBP"
 sed -i '' 's|^MaxFPS=.*|MaxFPS=0          ; bench: uncapped|' "$P/System/Unreal.ini"
+# PPSSPP has no Media Engine: the ME bridge start-up never returns there, so
+# the emulator ini must keep the music on the CPU (or the WAV fallback).
+grep -q "^MusicME=" "$P/System/Unreal.ini" || sed -i '' 's/^VertexArrays=1.*/&\
+MusicME=0/' "$P/System/Unreal.ini"
 rm -f "$P/System/Unreal.log"
 ("$PPSSPP" "$P/EBOOT.PBP" >/dev/null 2>&1 &)
 sleep "$SECS"

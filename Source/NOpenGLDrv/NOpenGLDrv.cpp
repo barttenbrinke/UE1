@@ -120,6 +120,17 @@ static INT   GPspBatchDraws = 0, GPspBatchPolys = 0, GPspFacetDraws = 0;   // pe
 static INT GPspLastUploadedMips = 0;   // levels the last UploadTexture really sent (chain may be cut short)
 static INT GPspLastUploadBytes  = 0;   // image bytes the last UploadTexture handed to pspgl
 static INT GPspTexBytes         = 0;   // image bytes pspgl holds for every cached texture
+// Engine-side texture data. Once pspgl holds a package texture's mips, the
+// engine's copy (4.6MB in the botmatch out-of-memory snapshot) is freed. If
+// the LRU eviction later throws the GL copy out and the texture is drawn
+// again, the mips are re-read from the package through its linker, exactly
+// as they were loaded the first time. Realtime and parametric textures (fire,
+// water, ice) keep their data: the engine rewrites it every frame.
+//   [PSP] FreeTextureData=1
+static INT GPspTexFreedBytes    = 0;   // engine bytes released so far
+static INT GPspTexReloads       = 0;   // package re-reads after eviction
+static INT GPspFreeTexData      = -1;
+static UBOOL GPspUploadFailedNow = 0;  // this UploadTexture hit a failed level (placeholder)
 static INT GPspTexBudget        = -1;  // [PSP] TextureBudgetMB, resolved on first use
 static INT GPspUploadFailed     = 0;
 static INT GPspUpFirst = 0, GPspUpRealtime = 0, GPspUpBig = 0;   // per report interval
@@ -683,7 +694,7 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				}
 				LastWall = Wall;
 			}
-			debugf( NAME_Log, "PSPPERF:   textures %i KB resident in %i cached, %i upload failures; %s", GPspTexBytes / 1024, BindMap.Size(), GPspUploadFailed, PspHeapStr() );
+			debugf( NAME_Log, "PSPPERF:   textures %i KB resident in %i cached, %i upload failures, engine copies freed %i KB, %i package reloads; %s", GPspTexBytes / 1024, BindMap.Size(), GPspUploadFailed, GPspTexFreedBytes / 1024, GPspTexReloads, PspHeapStr() );
 			debugf( NAME_Log, "PSPPERF:   uploads: %i first-time, %i realtime re-uploads, %i of them >=256x256, %i KB moved, hw palette %s",
 				GPspUpFirst, GPspUpRealtime, GPspUpBig, GPspUpBytes / 1024, UseHwPalette ? "on" : "off" );
 			GPspUpFirst = GPspUpRealtime = GPspUpBig = GPspUpBytes = 0;
@@ -2404,9 +2415,68 @@ static BYTE* PspRotateDynTex( const BYTE* Src, INT Bytes )
 }
 #endif
 
+#ifdef __PSP__
+// The render texture cache id is CID_RenderTexture + (object index << 32).
+static UTexture* PspTextureFromCacheID( QWORD CacheID )
+{
+	if( ( CacheID & 0xff ) != CID_RenderTexture )
+		return NULL;
+	UObject* Obj = GObj.GetIndexedObject( (INT)( CacheID >> 32 ) );
+	return ( Obj && Obj->IsA( UTexture::StaticClass ) ) ? (UTexture*)Obj : NULL;
+}
+
+// A package texture whose mips were freed: load them again from the package.
+static UBOOL PspReloadTextureData( FTextureInfo& Info )
+{
+	UTexture* Tex = PspTextureFromCacheID( Info.CacheID );
+	if( !Tex || !Tex->GetLinker() || !Tex->Mips.Num() || Tex->Mips(0).DataArray.Num() )
+		return 0;
+	if( !appReloadObject( Tex ) || !Tex->Mips.Num() || !Tex->Mips(0).DataArray.Num() )
+	{
+		debugf( NAME_Warning, "PSPTEX: reload of %s from its package produced no mips", Tex->GetName() );
+		return 0;
+	}
+	Tex->GetInfo( Info, 0.0 );   // fresh mip pointers; no Update() with time 0
+	++GPspTexReloads;
+	return 1;
+}
+
+// After a complete upload of a static package texture: drop the engine copy.
+static void PspFreeTextureData( FTextureInfo& Info, INT UploadedMips )
+{
+	if( GPspFreeTexData < 0 )
+	{
+		GPspFreeTexData = 1;
+		GetConfigInt( "PSP", "FreeTextureData", GPspFreeTexData );
+	}
+	// "Complete" means every level pspgl can take went up: the loop stops
+	// on purpose below 8x8, so compare against a failure flag, not NumMips.
+	if( !GPspFreeTexData || UploadedMips < 1 || GPspUploadFailedNow )
+		return;
+	if( Info.TextureFlags & ( TF_Realtime | TF_Parametric | TF_RealtimeChanged ) )
+		return;
+	UTexture* Tex = PspTextureFromCacheID( Info.CacheID );
+	if( !Tex || !Tex->GetLinker() )
+		return;
+	for( INT i=0; i<Tex->Mips.Num(); i++ )
+	{
+		GPspTexFreedBytes += Tex->Mips(i).DataArray.Num();
+		Tex->Mips(i).DataArray.Empty();
+		Tex->Mips(i).DataPtr = NULL;
+	}
+	for( INT i=0; i<Info.NumMips; i++ )
+		if( Info.Mips[i] ) Info.Mips[i]->DataPtr = NULL;
+}
+#endif
+
 void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOOL NewTexture )
 {
 	guard(UNOpenGLRenderDevice::UploadTexture);
+#ifdef __PSP__
+	// Evicted earlier with its engine copy already freed: fetch it again.
+	if( NewTexture && Info.Mips[0] && !Info.Mips[0]->DataPtr )
+		PspReloadTextureData( Info );
+#endif
 
 	if( !Info.Mips[0] )
 	{
@@ -2429,6 +2499,7 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 	BYTE*  LastBuf = NULL; INT LastW = 0, LastH = 0; GLenum LastFmt = 0, LastIF = 0;
 	INT    BaseW = 0, BaseH = 0;
 	GPspLastUploadBytes = 0;
+	GPspUploadFailedNow = 0;
 	if( NewTexture ) ++GPspUpFirst; else ++GPspUpRealtime;
 	if( Info.Mips[0] && Info.Mips[0]->USize * Info.Mips[0]->VSize >= 256 * 256 ) ++GPspUpBig;
 #endif
@@ -2577,6 +2648,7 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 				GPspLastUploadBytes = 8 * 8 * 4;
 			}
 			if( ++GPspUploadFailed <= 20 || ( GPspUploadFailed % 100 ) == 0 )
+				GPspUploadFailedNow = 1;
 				debugf( NAME_Log, "PSPTEX: upload FAILED (%ix%i level %i), placeholder used; %i failures, %i KB resident; %s",
 					UpW, UpH, MipIndex, GPspUploadFailed, GPspTexBytes / 1024, PspHeapStr() );
 			break;
@@ -2647,6 +2719,8 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 		}
 	}
 	GPspLastUploadedMips = UploadedMips;
+	if( NewTexture )
+		PspFreeTextureData( Info, UploadedMips );
 #endif
 
 	unguard;

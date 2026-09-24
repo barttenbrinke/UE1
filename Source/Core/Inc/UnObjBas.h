@@ -986,3 +986,9 @@ public:
 /*----------------------------------------------------------------------------
 	The End.
 ----------------------------------------------------------------------------*/
+// Re-serialize a package object from its linker (data the caller has dropped,
+// e.g. texture mips on a memory-starved console). Returns 0 if the object has
+// no linker. The object's package must still be loaded.
+CORE_API UBOOL appReloadObject( UObject* Object );
+
+

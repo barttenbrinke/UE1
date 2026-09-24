@@ -3509,3 +3509,18 @@ IMPLEMENT_CLASS(ULanguage);
 /*-----------------------------------------------------------------------------
 	The End.
 -----------------------------------------------------------------------------*/
+
+/*-----------------------------------------------------------------------------
+	Reloading an object's data from its package.
+-----------------------------------------------------------------------------*/
+
+CORE_API UBOOL appReloadObject( UObject* Object )
+{
+	guard(appReloadObject);
+	if( !Object || !Object->GetLinker() )
+		return 0;
+	Object->SetFlags( RF_NeedLoad );
+	Object->GetLinker()->Preload( Object );
+	return !( Object->GetFlags() & RF_NeedLoad );
+	unguard;
+}
