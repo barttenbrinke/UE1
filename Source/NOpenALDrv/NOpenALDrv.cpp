@@ -11,6 +11,149 @@
 #include "xmp.h"
 
 #include "NOpenALDrvPrivate.h"
+
+#ifdef __PSP__
+#include <pspaudio.h>
+#include <pspthreadman.h>
+#include <pspiofilemgr.h>
+#include <malloc.h>
+//
+// Pre-rendered music on a hardware channel. The tracker mixer (17 channels
+// for the intro's flyby.umx) is CPU the PSP does not have, so install-psp.sh
+// renders every .umx to Music/<song>.wav (11025 Hz mono 16-bit, xmp) and this
+// streams it: a high-priority thread reads a block, upsamples it 4x with
+// linear interpolation to the channel's 44100 Hz, and hands it to
+// sceAudioOutputBlocking, which the hardware mixes with OpenAL's channel for
+// free. Loops at end of file. Song sections are ignored (the file is the
+// whole module in order). Without the file, libxmp plays as before.
+//
+enum { PSP_MUS_FRAMES = 2048, PSP_MUS_OUTRATE = 44100 };
+static SceUID GPspMusFd = -1, GPspMusThread = -1;
+static int    GPspMusChan = -1, GPspMusRatio = 4, GPspMusDataStart = 0;
+static volatile int GPspMusRun = 0, GPspMusPlaying = 0, GPspMusVol = 0, GPspMusRewind = 0;
+static short* GPspMusSrc = NULL;
+static short* GPspMusOut = NULL;
+static UBOOL  GPspMusStreaming = 0;
+
+static int PspMusThreadProc( SceSize, void* )
+{
+	short Last = 0;
+	while( GPspMusRun )
+	{
+		if( !GPspMusPlaying )
+		{
+			sceKernelDelayThread( 20000 );
+			continue;
+		}
+		if( GPspMusRewind )
+		{
+			GPspMusRewind = 0;
+			sceIoLseek32( GPspMusFd, GPspMusDataStart, PSP_SEEK_SET );
+		}
+		const int Want = PSP_MUS_FRAMES * 2;
+		int Got = sceIoRead( GPspMusFd, GPspMusSrc, Want );
+		if( Got < 0 ) Got = 0;
+		if( Got < Want )
+		{
+			// End of file: wrap and top the block up from the start.
+			sceIoLseek32( GPspMusFd, GPspMusDataStart, PSP_SEEK_SET );
+			int More = sceIoRead( GPspMusFd, (BYTE*)GPspMusSrc + Got, Want - Got );
+			if( More > 0 ) Got += More;
+			if( Got < Want ) appMemset( (BYTE*)GPspMusSrc + Got, 0, Want - Got );
+		}
+		short* O = GPspMusOut;
+		for( int i = 0; i < PSP_MUS_FRAMES; ++i )
+		{
+			const int S = GPspMusSrc[i];
+			for( int k = 1; k <= GPspMusRatio; ++k )
+				*O++ = (short)( Last + ( S - Last ) * k / GPspMusRatio );
+			Last = (short)S;
+		}
+		sceAudioOutputBlocking( GPspMusChan, GPspMusVol, GPspMusOut );
+	}
+	return 0;
+}
+
+static void PspMusClose()
+{
+	if( GPspMusThread >= 0 )
+	{
+		GPspMusRun = 0;
+		sceKernelWaitThreadEnd( GPspMusThread, NULL );
+		sceKernelDeleteThread( GPspMusThread );
+		GPspMusThread = -1;
+	}
+	if( GPspMusChan >= 0 ) { sceAudioChRelease( GPspMusChan ); GPspMusChan = -1; }
+	if( GPspMusFd >= 0 )   { sceIoClose( GPspMusFd ); GPspMusFd = -1; }
+	GPspMusStreaming = 0;
+	GPspMusPlaying   = 0;
+}
+
+// Music/<Name>.wav next to System/. Returns 1 and takes over playback when the
+// file exists and is 16-bit mono PCM at a rate that divides 44100.
+static UBOOL PspMusOpen( const char* Name )
+{
+	PspMusClose();
+	char Path[300];
+	appStrncpy( Path, appBaseDir(), sizeof(Path) );            // ".../Unreal/System/"
+	INT L = appStrlen( Path );
+	if( L > 7 && appStricmp( Path + L - 7, "System/" ) == 0 ) Path[L-7] = 0;
+	appStrncat( Path, "Music/", sizeof(Path) - 1 );
+	appStrncat( Path, Name, sizeof(Path) - 1 );
+	appStrncat( Path, ".wav", sizeof(Path) - 1 );
+	SceUID Fd = sceIoOpen( Path, PSP_O_RDONLY, 0777 );
+	if( Fd < 0 )
+		return 0;
+
+	// RIFF walk for "fmt " and "data".
+	static BYTE Hdr[512] __attribute__((aligned(64)));
+	int N = sceIoRead( Fd, Hdr, sizeof(Hdr) );
+	if( N < 44 || appMemcmp( Hdr, "RIFF", 4 ) || appMemcmp( Hdr + 8, "WAVE", 4 ) ) { sceIoClose( Fd ); return 0; }
+	int Rate = 0, Channels = 0, Bits = 0, DataAt = 0, O = 12;
+	while( O + 8 <= N )
+	{
+		DWORD Len; appMemcpy( &Len, Hdr + O + 4, 4 );
+		if( !appMemcmp( Hdr + O, "fmt ", 4 ) )
+		{
+			_WORD w; appMemcpy( &w, Hdr + O + 10, 2 ); Channels = w;
+			DWORD d; appMemcpy( &d, Hdr + O + 12, 4 ); Rate = d;
+			appMemcpy( &w, Hdr + O + 22, 2 ); Bits = w;
+		}
+		else if( !appMemcmp( Hdr + O, "data", 4 ) ) { DataAt = O + 8; break; }
+		O += 8 + ( ( Len + 1 ) & ~1 );
+	}
+	if( !DataAt || Channels != 1 || Bits != 16 || Rate <= 0 || ( PSP_MUS_OUTRATE % Rate ) != 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: %s is not 16-bit mono PCM at a rate dividing 44100 (ch %i bits %i rate %i)", Path, Channels, Bits, Rate );
+		sceIoClose( Fd );
+		return 0;
+	}
+	GPspMusRatio     = PSP_MUS_OUTRATE / Rate;
+	GPspMusDataStart = DataAt;
+	sceIoLseek32( Fd, DataAt, PSP_SEEK_SET );
+	if( !GPspMusSrc ) GPspMusSrc = (short*)memalign( 64, PSP_MUS_FRAMES * 2 );
+	if( !GPspMusOut ) GPspMusOut = (short*)memalign( 64, PSP_MUS_FRAMES * 2 * 8 );   // room for ratio up to 8
+	GPspMusChan = sceAudioChReserve( PSP_AUDIO_NEXT_CHANNEL, PSP_MUS_FRAMES * GPspMusRatio, PSP_AUDIO_FORMAT_MONO );
+	if( !GPspMusSrc || !GPspMusOut || GPspMusChan < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: no hardware channel (%i)", GPspMusChan );
+		GPspMusChan = -1; sceIoClose( Fd ); return 0;
+	}
+	GPspMusFd  = Fd;
+	GPspMusRun = 1; GPspMusPlaying = 0; GPspMusRewind = 0;
+	// Above the main thread (which SDLLaunch lowers further) so long frames
+	// never starve it; the block output blocks, so it costs nothing otherwise.
+	GPspMusThread = sceKernelCreateThread( "psp_music", PspMusThreadProc, 0x10, 16 * 1024, THREAD_ATTR_USER, NULL );
+	if( GPspMusThread < 0 || sceKernelStartThread( GPspMusThread, 0, NULL ) < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: thread failed (%i)", GPspMusThread );
+		GPspMusThread = -1; PspMusClose(); return 0;
+	}
+	GPspMusStreaming = 1;
+	debugf( NAME_Log, "PSPMUSIC: streaming %s (%i Hz x%i) on hardware channel %i", Path, Rate, GPspMusRatio, GPspMusChan );
+	return 1;
+}
+#endif
 #include "UnRender.h"
 
 /*-----------------------------------------------------------------------------
@@ -282,6 +425,9 @@ void UNOpenALAudioSubsystem::PostEditChange()
 		alListenerf( AL_GAIN, MasterVolume / 255.f );
 		alDopplerFactor( DopplerFactor );
 		alSourcef( MusicSource, AL_GAIN, Max(MusicFade, 0.f) * MusicVolume / 255.f );
+#ifdef __PSP__
+			GPspMusVol = (int)( Max(MusicFade, 0.f) * MusicVolume / 255.f * PSP_AUDIO_VOLUME_MAX );
+#endif
 		// Voice volumes will be updated in Update().
 	}
 
@@ -325,6 +471,14 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 	if( Music->Handle || !Music->Data.Num() )
 		return;
 
+#ifdef __PSP__
+	if( PspMusOpen( Music->GetName() ) )
+	{
+		Music->Handle = (void*)2;
+		MusicIsLoaded = true;
+		return;
+	}
+#endif
 	INT Err = xmp_load_module_from_memory( MusicCtx, &Music->Data(0), Music->Data.Num() );
 	if( Err < 0 )
 	{
@@ -354,6 +508,14 @@ void UNOpenALAudioSubsystem::UnregisterMusic( UMusic* Music )
 
 	StopMusic();
 	ClearMusicBuffers();
+#ifdef __PSP__
+	if( GPspMusStreaming )
+	{
+		PspMusClose();
+		MusicIsLoaded = false;
+		return;
+	}
+#endif
 	if( MusicCtx )
 	{
 		xmp_end_player( MusicCtx );
@@ -641,6 +803,15 @@ void UNOpenALAudioSubsystem::PlayMusic()
 
 	FScopedLock Lock( MusicMutex );
 
+#ifdef __PSP__
+	if( GPspMusStreaming )
+	{
+		GPspMusRewind  = 1;   // sections are not rendered separately; restart the loop
+		GPspMusPlaying = 1;
+		MusicIsPlaying = true;
+		return;
+	}
+#endif
 	alSourceStop(MusicSource);
 	ClearMusicBuffers();
 	xmp_set_position( MusicCtx, MusicSection );
@@ -662,6 +833,9 @@ void UNOpenALAudioSubsystem::StopMusic()
 	FScopedLock Lock( MusicMutex );
 
 	MusicIsPlaying = false;
+#ifdef __PSP__
+	GPspMusPlaying = 0;
+#endif
 	alSourceStop( MusicSource );
 
 	unguard;
@@ -839,6 +1013,9 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 			else
 			{
 				alSourcef( MusicSource, AL_GAIN, Max(MusicFade, 0.f) * MusicVolume / 255.f );
+#ifdef __PSP__
+			GPspMusVol = (int)( Max(MusicFade, 0.f) * MusicVolume / 255.f * PSP_AUDIO_VOLUME_MAX );
+#endif
 			}
 
 			MusicMutex.Unlock();
@@ -849,6 +1026,9 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 			FScopedLock Lock( MusicMutex );
 			MusicFade = 1.f;
 			alSourcef( MusicSource, AL_GAIN, Max(MusicFade, 0.f) * MusicVolume / 255.f );
+#ifdef __PSP__
+			GPspMusVol = (int)( Max(MusicFade, 0.f) * MusicVolume / 255.f * PSP_AUDIO_VOLUME_MAX );
+#endif
 			Music = Viewport->Actor->Song;
 			MusicSection = Viewport->Actor->SongSection;
 			if( Music )
@@ -892,6 +1072,10 @@ void UNOpenALAudioSubsystem::UpdateMusicBuffers()
 
 	if( !Music || !MusicIsPlaying || MusicSection == 255 || !MusicCtx )
 		return;
+#ifdef __PSP__
+	if( GPspMusStreaming )
+		return;
+#endif
 
 	// If music is playing, render and queue more buffers if available
 	while( BuffersQueued < NUM_MUSIC_BUFFERS && NumFreeMusicBuffers )

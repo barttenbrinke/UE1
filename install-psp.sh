@@ -33,6 +33,22 @@ for d in System Maps Textures Sounds Music; do
   rsync -rt --delete --exclude '._*' --exclude '.DS_Store' "$ASSETS/$d/" "$DEST/$d/"
 done
 
+# Music: the tracker mixer is CPU the PSP does not have, so every .umx is
+# also rendered to Music/<song>.wav (11025 Hz mono 16-bit, section order as
+# stored) and the PSP audio driver streams that to a hardware channel instead.
+# Needs xmp (brew install libxmp xmp); without it the console falls back to
+# mixing the module in real time. Renders are derived from the CD data and
+# stay out of the repo. Existing renders are kept.
+if command -v xmp >/dev/null 2>&1; then
+  echo "    Music renders"
+  for f in "$ASSETS"/Music/*.umx; do
+    n=$(basename "$f" .umx)
+    [[ -f "$DEST/Music/$n.wav" ]] || xmp --nocmd -d wav -o "$DEST/Music/$n.wav" -f 11025 -m -F "$f" >/dev/null 2>&1 || echo "    (render failed: $n)"
+  done
+else
+  echo "    (xmp not installed: no music renders, the PSP will mix modules itself)"
+fi
+
 # The port's own configs replace the CD's, per the upstream README.
 cp "$HERE/Engine/Config/Default.ini" "$HERE/Engine/Config/Unreal.ini" "$DEST/System/"
 
