@@ -226,6 +226,8 @@ static SQWORD GPspAccBind = 0, GPspAccImage = 0, GPspAccComplex = 0;
 static SQWORD GPspAccGouraud = 0, GPspAccTile = 0;
 // The engine's own renderer stats, to break down what is left over.
 static SQWORD GPspAccIllum = 0, GPspAccOcclusion = 0, GPspAccMesh = 0, GPspAccPolyV = 0;
+static INT GPspAccClip = 0, GPspAccRaster = 0, GPspAccSpan = 0;   // OccludeBsp's own sub-timers
+static INT GPspAccMeshFrame = 0;                                     // UMesh::GetFrame (keyframe lerp + transform)
 #endif
 
 #define GL_CHECK_EXT(ext) GLAD_GL_ ## ext
@@ -576,6 +578,12 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccOcclusion),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMesh),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccPolyV) );
+			debugf( NAME_Log, "PSPPERF:   occlusion: clip %.0fms raster %.0fms span %.0fms (rest is traversal/bounds); mesh getframe %.0fms",
+				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccClip),
+				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccRaster),
+				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccSpan),
+				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshFrame) );
+			GPspAccClip = GPspAccRaster = GPspAccSpan = GPspAccMeshFrame = 0;
 			GPspAccBind = GPspAccImage = GPspAccComplex = GPspAccGouraud = GPspAccTile = 0;
 			GPspAccIllum = GPspAccOcclusion = GPspAccMesh = GPspAccPolyV = 0;
 			GPspUploadLast = GPspUploadCount;
@@ -649,6 +657,10 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 	GPspAccOcclusion += (INT)GStat.OcclusionTime;
 	GPspAccMesh      += (INT)GStat.MeshTime;
 	GPspAccPolyV     += (INT)GStat.PolyVTime;
+	GPspAccClip      += (INT)GStat.ClipTime;
+	GPspAccRaster    += (INT)GStat.RasterTime;
+	GPspAccSpan      += (INT)GStat.SpanTime;
+	GPspAccMeshFrame += (INT)GStat.MeshGetFrameTime;
 #endif
 
 	unguard;
@@ -656,9 +668,6 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 
 void UNOpenGLRenderDevice::DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet )
 {
-#ifdef __PSP__
-	PspFlushBatch();
-#endif
 	guard(UNOpenGLRenderDevice::DrawComplexSurface);
 
 	check(Surface.Texture);
@@ -874,6 +883,22 @@ static void PspFlushBatch()
 	GPspBatchOpen  = 0;
 }
 
+// Room for N vertices in the batch, flushing first if it is full (the GL
+// state is the batch's, so it stays open). NULL only if N cannot ever fit.
+static inline BYTE* PspBatchReserve( INT N )
+{
+	if( N > PSP_BATCH_MAX_VERTS )
+		return NULL;
+	if( GPspBatchVerts + N > PSP_BATCH_MAX_VERTS )
+	{
+		PspFlushBatch();
+		GPspBatchOpen = 1;
+	}
+	BYTE* P = GPspBatchBuf + GPspBatchVerts * 24;
+	GPspBatchVerts += N;
+	return P;
+}
+
 // Fan -> triangle list copy: vertices 0,i,i+1 for i in 1..N-2, Stride bytes each.
 static inline BYTE* PspFanToTris( BYTE* Out, const BYTE* Fan, INT N, INT Stride )
 {
@@ -1067,13 +1092,71 @@ static void PspEmitFacetLit( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 		++GPspFacetDraws;
 	}
 }
+
+// Base pass into the shared triangle batch (see PspFlushBatch): consecutive
+// surfaces with the same texture and flags -- which is how the engine hands
+// them over, sorted by texture -- become one draw instead of one per facet.
+// LM == NULL draws unlit (white vertex colour, modulate leaves the texture).
+static void PspBatchFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
+                           FLOAT UPan, FLOAT VPan, FLOAT UMult, FLOAT VMult,
+                           const FTextureInfo* LM )
+{
+	const BYTE* LMData = NULL; INT LMU = 1, LMV = 1; FLOAT LMUPan = 0, LMVPan = 0, InvUScale = 0, InvVScale = 0;
+	if( LM )
+	{
+		LMData = (const BYTE*)LM->Mips[0]->DataPtr; LMU = LM->Mips[0]->USize; LMV = LM->Mips[0]->VSize;
+		LMUPan = LM->Pan.X - 0.5f * LM->UScale; LMVPan = LM->Pan.Y - 0.5f * LM->VScale;
+		InvUScale = 1.f / LM->UScale; InvVScale = 1.f / LM->VScale;
+	}
+	static BYTE Fan[PSP_POLY_MAX * 24];
+	INT Base = 0;
+	for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
+	{
+		const INT N = Poly->NumPts;
+		if( N < 3 || N > PSP_POLY_MAX )
+		{
+			Base += N;
+			continue;
+		}
+		BYTE* V = Fan;
+		for( INT i = 0; i < N; ++i )
+		{
+			const FLOAT* Raw = &GPspRawUV[ ( Base + i ) * 2 ];
+			FLOAT* T = (FLOAT*)V;
+			T[0] = ( Raw[0] - UDot - UPan ) * UMult;
+			T[1] = ( Raw[1] - VDot - VPan ) * VMult;
+			BYTE* C = V + 8;
+			if( LMData )
+			{
+				INT iu = appFloor( ( Raw[0] - UDot - LMUPan ) * InvUScale );
+				INT iv = appFloor( ( Raw[1] - VDot - LMVPan ) * InvVScale );
+				iu = Clamp( iu, 0, LMU - 1 );
+				iv = Clamp( iv, 0, LMV - 1 );
+				const BYTE* Texel = &LMData[ ( iv * LMU + iu ) * 4 ];
+				C[0] = GPspLightLUT[ Texel[2] & 0x7F ];
+				C[1] = GPspLightLUT[ Texel[1] & 0x7F ];
+				C[2] = GPspLightLUT[ Texel[0] & 0x7F ];
+			}
+			else
+				C[0] = C[1] = C[2] = 255;
+			C[3] = 255;
+			FLOAT* P3 = (FLOAT*)( V + 12 );
+			const FVector& P = Poly->Pts[i]->Point;
+			P3[0] = P.X; P3[1] = P.Y; P3[2] = P.Z;
+			V += 24;
+		}
+		BYTE* Out = PspBatchReserve( 3 * ( N - 2 ) );
+		if( Out )
+			PspFanToTris( Out, Fan, N, 24 );
+		Base += N;
+	}
+	++GPspFacetDraws;   // counts facets submitted, no longer draws
+}
+
 #endif
 
 void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet )
 {
-#ifdef __PSP__
-	PspFlushBatch();
-#endif
 	const FLOAT UDot = Facet.MapCoords.XAxis | Facet.MapCoords.Origin;
 	const FLOAT VDot = Facet.MapCoords.YAxis | Facet.MapCoords.Origin;
 
@@ -1131,20 +1214,43 @@ void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurf
 				PspVertexLight && Surface.LightMap && !Surface.LightMap->Palette &&
 				Surface.LightMap->Mips[0] && Surface.LightMap->Mips[0]->DataPtr;
 
-			// Base texture.
-			SetBlend( Surface.PolyFlags );
-			SetTexture( 0, *Surface.Texture, ( Surface.PolyFlags & PF_Masked ), 0.f );
-			if( bVertexLit )
+			static INT PspLightMaps = -1;
+			if( PspLightMaps < 0 )
 			{
-				// One pass: GU_TFX_MODULATE gives texture * vertex colour.
-				PspEmitFacetLit( Facet, UDot, VDot, TexInfo[0].UPan, TexInfo[0].VPan,
-					TexInfo[0].UMult, TexInfo[0].VMult, *Surface.LightMap );
+				PspLightMaps = 1;
+				GetConfigInt( "PSP", "LightMaps", PspLightMaps );
+				debugf( NAME_Log, "PSPPERF: lightmap pass = %s", PspLightMaps ? "on" : "off" );
 			}
-			else
+			// Base texture, into the shared batch (same key rules as the mesh
+			// path: texture, flags, frame; a realtime texture change reopens).
 			{
-				glColor4f( 1.f, 1.f, 1.f, 1.f );
-				PspEmitFacet( Facet, UDot, VDot, TexInfo[0].UPan, TexInfo[0].VPan, TexInfo[0].UMult, TexInfo[0].VMult );
+				const UBOOL Realtime = ( Surface.Texture->TextureFlags & TF_RealtimeChanged );
+				if( GPspBatchOpen && ( Surface.Texture->CacheID != GPspBatchTex || Surface.PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime ) )
+					PspFlushBatch();
+				if( !GPspBatchOpen )
+				{
+					SetBlend( Surface.PolyFlags );
+					SetTexture( 0, *Surface.Texture, ( Surface.PolyFlags & PF_Masked ), 0.f );
+					ResetTexture( 1 ); ResetTexture( 2 ); ResetTexture( 3 );
+					GPspBatchOpen  = 1;
+					GPspBatchTex   = Surface.Texture->CacheID;
+					GPspBatchFlags = Surface.PolyFlags;
+					GPspBatchFrame = Frame;
+				}
+				// Pan and scale from THIS surface's texture info: SetTexture is
+				// skipped while the batch stays open, so TexInfo[0] would carry the
+				// previous surface's pan (textures visibly sliding/zooming).
+				const FTextureInfo& BT = *Surface.Texture;
+				const FLOAT BUMult = 1.f / ( BT.UScale * (FLOAT)Max( 8, BT.USize ) );
+				const FLOAT BVMult = 1.f / ( BT.VScale * (FLOAT)Max( 8, BT.VSize ) );
+				PspBatchFacet( Facet, UDot, VDot, BT.Pan.X, BT.Pan.Y, BUMult, BVMult,
+					bVertexLit ? Surface.LightMap : NULL );
 			}
+			// Any extra pass below draws over this surface with GL_EQUAL, so the
+			// batch (which now holds this surface) must be on the GE first.
+			const UBOOL bExtraPass = ( Surface.LightMap && PspLightMaps && !bVertexLit ) || ( Surface.DetailTexture && DetailTextures ) || Surface.FogMap;
+			if( bExtraPass )
+				PspFlushBatch();
 
 			// Lightmap.
 			//
@@ -1153,13 +1259,6 @@ void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurf
 			// frame, so each one is both re-uploaded AND costs a second full
 			// geometry pass over the surface. Set [PSP] LightMaps=0 in
 			// Unreal.ini to drop the pass and measure what it is worth.
-			static INT PspLightMaps = -1;
-			if( PspLightMaps < 0 )
-			{
-				PspLightMaps = 1;
-				GetConfigInt( "PSP", "LightMaps", PspLightMaps );
-				debugf( NAME_Log, "PSPPERF: lightmap pass = %s", PspLightMaps ? "on" : "off" );
-			}
 			if( Surface.LightMap && PspLightMaps && !bVertexLit )
 			{
 				SetBlend( PF_Modulated );
