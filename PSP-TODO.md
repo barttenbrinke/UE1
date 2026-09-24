@@ -13,6 +13,8 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 
 - [ ] Music volume/effects balance after the louder defaults
       (SoundVolume 255, MusicVolume 180).
+- [ ] Read the per-thread CPU shares (now in the PSPPERF report) on the
+      PSP: decides whether OpenAL's mixer goes to the Media Engine.
 
 ## Bigger, in order of expected payoff
 
@@ -29,8 +31,12 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 - [ ] Media Engine, next candidates now that the bridge works: OpenAL's
       software mixer (audioOutput thread, priority 22 on the main CPU), or
       the mesh pass once its CPU share is understood.
-- [ ] Botmatch "out of memory": unload engine texture mips and sound
-      samples after upload (~7 MB), consider TextureBudgetMB=4.
+- [~] Botmatch "out of memory": engine copies of sound samples (3.1 MB in
+      the snapshot) and static package texture mips (4.6 MB) are now freed
+      after upload; evicted textures are re-read from their package
+      (`appReloadObject`). Emulator stress test passed (1 MB budget, 678
+      reloads). Still to verify: a botmatch on the hardware. `[PSP]
+      FreeSoundData` / `FreeTextureData` turn it off.
 
 ## Rejected on hardware numbers (do not retry)
 
