@@ -32,7 +32,9 @@ static SceUID GPspMusFd = -1, GPspMusThread = -1;
 static int    GPspMusChan = -1, GPspMusRatio = 4, GPspMusDataStart = 0;
 static volatile int GPspMusRun = 0, GPspMusPlaying = 0, GPspMusVol = 0, GPspMusRewind = 0;
 static short* GPspMusSrc = NULL;
-static short* GPspMusOut = NULL;
+static short* GPspMusOut = NULL;   // two halves: the hardware reads a block while the next is built
+static int    GPspMusOutHalf = 0;
+static const int PSP_MUS_OUT_HALF = PSP_MUS_FRAMES * 8;   // shorts per half, room for ratio up to 8
 static UBOOL  GPspMusStreaming = 0;
 
 // ---- Music rendered on the Media Engine ------------------------------------
@@ -115,7 +117,10 @@ __attribute__((noinline, aligned(4))) void meLibOnProcess( void )   // declared 
 				Me->Status = 0;
 			}
 		}
-		if( Ctx && ( Me->Write - Me->Read ) < PSP_ME_BLOCKS )
+		// One block of slack: the block the CPU just handed to the channel is
+		// still being read by the audio hardware while the next one plays, so
+		// the ME may not reuse it until the CPU has consumed one more.
+		if( Ctx && ( Me->Write - Me->Read ) < PSP_ME_BLOCKS - 1 )
 		{
 			void* Block = (void*)( Me->Ring + ( Me->Write % PSP_ME_BLOCKS ) * Me->BlockBytes );
 			const int R = xmp_play_buffer( Ctx, Block, (int)Me->BlockBytes, 0 );
@@ -221,7 +226,8 @@ static int PspMusThreadProc( SceSize, void* )
 				sceAudioOutputBlocking( GPspMusChan, GPspMusVol, (void*)Block );
 			else
 			{
-				short* O = GPspMusOut;
+				short* Out = GPspMusOut + ( GPspMusOutHalf ^= 1 ) * PSP_MUS_OUT_HALF;
+				short* O = Out;
 				for( int i = 0; i < PSP_MUS_FRAMES; ++i )
 				{
 					const int S = Block[i];
@@ -229,7 +235,7 @@ static int PspMusThreadProc( SceSize, void* )
 						*O++ = (short)( Last + ( S - Last ) * k / GPspMusRatio );
 					Last = (short)S;
 				}
-				sceAudioOutputBlocking( GPspMusChan, GPspMusVol, GPspMusOut );
+				sceAudioOutputBlocking( GPspMusChan, GPspMusVol, Out );
 			}
 			GPspMe->Read = GPspMe->Read + 1;
 			static u32 Logged = 0;
@@ -257,7 +263,8 @@ static int PspMusThreadProc( SceSize, void* )
 			if( More > 0 ) Got += More;
 			if( Got < Want ) appMemset( (BYTE*)GPspMusSrc + Got, 0, Want - Got );
 		}
-		short* O = GPspMusOut;
+		short* Out = GPspMusOut + ( GPspMusOutHalf ^= 1 ) * PSP_MUS_OUT_HALF;
+		short* O = Out;
 		for( int i = 0; i < PSP_MUS_FRAMES; ++i )
 		{
 			const int S = GPspMusSrc[i];
@@ -265,7 +272,7 @@ static int PspMusThreadProc( SceSize, void* )
 				*O++ = (short)( Last + ( S - Last ) * k / GPspMusRatio );
 			Last = (short)S;
 		}
-		sceAudioOutputBlocking( GPspMusChan, GPspMusVol, GPspMusOut );
+		sceAudioOutputBlocking( GPspMusChan, GPspMusVol, Out );
 	}
 	return 0;
 }
@@ -296,7 +303,7 @@ static UBOOL PspMeOpen( xmp_context Ctx, const char* Name, INT Volume255 )
 	PspMusClose();
 	GPspMusVol   = Volume255 * PSP_AUDIO_VOLUME_MAX / 255;
 	GPspMusRatio = PSP_MUS_OUTRATE / GPspMeRate;
-	if( !GPspMusOut ) GPspMusOut = (short*)memalign( 64, PSP_MUS_FRAMES * 2 * 8 );
+	if( !GPspMusOut ) GPspMusOut = (short*)memalign( 64, PSP_MUS_OUT_HALF * 2 * 2 );
 	GPspMusChan = sceAudioChReserve( PSP_AUDIO_NEXT_CHANNEL, PSP_MUS_FRAMES * GPspMusRatio, GPspMeStereo ? PSP_AUDIO_FORMAT_STEREO : PSP_AUDIO_FORMAT_MONO );
 	if( !GPspMusOut || GPspMusChan < 0 )
 	{
@@ -371,7 +378,7 @@ static UBOOL PspMusOpen( const char* Name, INT Volume255 )
 	GPspMusDataStart = DataAt;
 	sceIoLseek32( Fd, DataAt, PSP_SEEK_SET );
 	if( !GPspMusSrc ) GPspMusSrc = (short*)memalign( 64, PSP_MUS_FRAMES * 2 );
-	if( !GPspMusOut ) GPspMusOut = (short*)memalign( 64, PSP_MUS_FRAMES * 2 * 8 );   // room for ratio up to 8
+	if( !GPspMusOut ) GPspMusOut = (short*)memalign( 64, PSP_MUS_OUT_HALF * 2 * 2 );   // two halves
 	GPspMusChan = sceAudioChReserve( PSP_AUDIO_NEXT_CHANNEL, PSP_MUS_FRAMES * GPspMusRatio, PSP_AUDIO_FORMAT_MONO );
 	if( !GPspMusSrc || !GPspMusOut || GPspMusChan < 0 )
 	{

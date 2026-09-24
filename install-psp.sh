@@ -93,8 +93,8 @@ LightMapHz=0      ; dynamic lightmap rebuild rate; 0 = every frame
 LightFX=1         ; torch/fire/water light waver effects
 VertexLight=1     ; fold lightmap into vertex colour: one geometry pass, not two
 LightScale=150    ; VertexLight brightness %, 100 matches the two-pass original
-Gamma=150         ; base texture gamma %, 100 = off
-LightGamma=125    ; lightmap curve %, 100 = linear; lifts dark areas without saturating bright ones
+Gamma=160         ; base texture gamma %, 100 = off
+LightGamma=160    ; lightmap curve %, 100 = linear; lifts dark areas without saturating bright ones
 VertexArrays=1    ; 0 = stock immediate-mode renderer (bisect switch)
 TextureBudgetMB=8 ; resident GL texture memory before least-recently-used eviction; the heap is ~38MB and Unreal's own data takes ~26MB
 PSPCFG
