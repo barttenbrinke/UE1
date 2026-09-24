@@ -37,6 +37,8 @@ void UNOpenALAudioSubsystem::InternalClassInitializer( UClass* Class )
 	new(Class, "UseReverb",          RF_Public)UBoolProperty  ( CPP_PROPERTY( UseReverb          ), "Audio", CPF_Config );
 	new(Class, "UseHRTF",            RF_Public)UBoolProperty  ( CPP_PROPERTY( UseHRTF            ), "Audio", CPF_Config );
 	new(Class, "MusicInterpolation", RF_Public)UByteProperty  ( CPP_PROPERTY( MusicInterpolation ), "Audio", CPF_Config );
+	new(Class, "MusicRate",          RF_Public)UIntProperty   ( CPP_PROPERTY( MusicRate          ), "Audio", CPF_Config );
+	new(Class, "MusicMono",          RF_Public)UBoolProperty  ( CPP_PROPERTY( MusicMono          ), "Audio", CPF_Config );
 	unguardSlow;
 }
 
@@ -51,6 +53,15 @@ UNOpenALAudioSubsystem::UNOpenALAudioSubsystem()
 	UseHRTF = true;
 	UseReverb = true;
 	MusicInterpolation = XMP_INTERP_LINEAR;
+#ifdef __PSP__
+	// libxmp mixes on the CPU; a 333MHz MIPS cannot spare 22kHz stereo with
+	// filters. 11kHz mono, nearest, no DSP is "cheap tracker" quality.
+	MusicRate = 11025;
+	MusicMono = 1;
+#else
+	MusicRate = 0;      // 0 = the device rate
+	MusicMono = 0;
+#endif
 }
 
 UBOOL UNOpenALAudioSubsystem::Init()
@@ -79,6 +90,8 @@ UBOOL UNOpenALAudioSubsystem::Init()
 
 	if( MusicInterpolation > XMP_INTERP_SPLINE )
 		MusicInterpolation = XMP_INTERP_SPLINE;
+	if( MusicRate <= 0 )
+		MusicRate = OutputRate;
 
 #ifdef PSP_NO_EFX
 	// PSP's alext.h has no ALC_SOFT_HRTF, and HRTF is meaningless on the
@@ -124,7 +137,7 @@ UBOOL UNOpenALAudioSubsystem::Init()
 	alGenBuffers( ARRAY_COUNT( MusicBuffers ), MusicBuffers );
 	for( INT i = 0; i < ARRAY_COUNT( MusicBuffers ); ++i )
 	{
-		alBufferData( MusicBuffers[i], AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), OutputRate );
+		alBufferData( MusicBuffers[i], MusicMono ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), MusicRate );
 		FreeMusicBuffers[i] = MusicBuffers[i];
 	}
 	NumFreeMusicBuffers = NUM_MUSIC_BUFFERS;
@@ -145,6 +158,9 @@ UBOOL UNOpenALAudioSubsystem::Init()
 
 	MusicCtx = xmp_create_context();
 	xmp_set_player( MusicCtx, XMP_PLAYER_INTERP, MusicInterpolation );
+#ifdef __PSP__
+	xmp_set_player( MusicCtx, XMP_PLAYER_DSP, 0 );   // no lowpass filtering
+#endif
 
 	// Set ourselves up as the audio subsystem.
 	USound::Audio = this;
@@ -316,7 +332,7 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 		return;
 	}
 
-	Err = xmp_start_player( MusicCtx, OutputRate, 0 );
+	Err = xmp_start_player( MusicCtx, MusicRate, MusicMono ? XMP_FORMAT_MONO : 0 );
 	if( Err < 0 )
 	{
 		xmp_release_module( MusicCtx );
@@ -882,7 +898,7 @@ void UNOpenALAudioSubsystem::UpdateMusicBuffers()
 	{
 		if( xmp_play_buffer( MusicCtx, MusicBufferData, sizeof( MusicBufferData ), 0 ) < 0 )
 			break;
-		alBufferData( FreeMusicBuffers[NumFreeMusicBuffers - 1], AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), OutputRate );
+		alBufferData( FreeMusicBuffers[NumFreeMusicBuffers - 1], MusicMono ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), MusicRate );
 		alSourceQueueBuffers( MusicSource, 1, &FreeMusicBuffers[NumFreeMusicBuffers - 1] );
 		--NumFreeMusicBuffers;
 		++BuffersQueued;
@@ -913,7 +929,7 @@ void UNOpenALAudioSubsystem::ClearMusicBuffers()
 	}
 
 	for( INT i = 0; i < NumFreeMusicBuffers; ++i )
-		alBufferData( FreeMusicBuffers[i], AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), OutputRate );
+		alBufferData( FreeMusicBuffers[i], MusicMono ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), MusicRate );
 
 	unguard;
 }

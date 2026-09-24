@@ -40,8 +40,8 @@ cp "$HERE/Engine/Config/Default.ini" "$HERE/Engine/Config/Unreal.ini" "$DEST/Sys
 find "$DEST/System" \( -iname '*.dll' -o -iname '*.exe' \) -delete
 
 # Point the engine at the driver this build actually contains: the fixed
-# (Shiny surfaces render the scene twice through every mirror, high-detail
-# actors and coronas are extra draws; all off for the PSP's CPU.)
+# (Shiny surfaces render the scene twice through every mirror: off. Coronas
+# and high-detail actors stay on; the cost is small and the look matters.)
 # pipeline GL driver rather than the GLES one. Audio now uses NOpenALDrv,
 # with reverb compiled out (PSP_NO_EFX), so it is left alone.
 # The "=" anchors matter: without them these also rewrite the [section] headers,
@@ -53,8 +53,8 @@ sed -i '' \
   -e 's|^ViewportY=.*|ViewportY=272|' \
   -e 's|^StartupFullscreen=.*|StartupFullscreen=True|' \
   -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^ShinySurfaces=.*|ShinySurfaces=False|' \
-  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^HighDetailActors=.*|HighDetailActors=False|' \
-  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^Coronas=.*|Coronas=False|' \
+  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^HighDetailActors=.*|HighDetailActors=True|' \
+  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^Coronas=.*|Coronas=True|' \
   -e 's|^OutputRate=.*|OutputRate=22050|' \
   -e 's|^MusicInterpolation=.*|MusicInterpolation=0|' \
   "$DEST/System/Default.ini" "$DEST/System/Unreal.ini"

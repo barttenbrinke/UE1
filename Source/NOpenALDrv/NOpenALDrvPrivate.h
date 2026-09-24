@@ -41,6 +41,8 @@ class DLL_EXPORT UNOpenALAudioSubsystem : public UAudioSubsystem
 	BYTE SoundVolume;
 	BYTE MusicVolume;
 	BYTE MusicInterpolation;
+	INT  MusicRate;    // tracker mixing rate; the device resamples (PSP: 11025)
+	UBOOL MusicMono;   // mix the tracker in mono (PSP: on) -- half the mixing work
 	FLOAT AmbientFactor;
 	FLOAT DopplerFactor;
 	UBOOL UseReverb;
