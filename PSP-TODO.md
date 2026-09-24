@@ -55,6 +55,13 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       (`appReloadObject`). Emulator stress test passed (1 MB budget, 678
       reloads). Still to verify: a botmatch on the hardware. `[PSP]
       FreeSoundData` / `FreeTextureData` turn it off.
+      Emulator finding: DmRadikus fails while LOADING (UMesh::Serialize,
+      one 611 KB vertex array of 152,820 FMeshVert), before any texture is
+      uploaded or sound registered, so the frees cannot help that case;
+      PPSSPP's arena is ~27 MB against ~38 MB on the PSP, so it is not the
+      judge. The OOM message now prints heap used/free and the largest
+      block. If the PSP still fails: lower TextureBudgetMB, or load the
+      big mesh arrays before textures (fragmentation).
 
 ## Rejected on hardware numbers (do not retry)
 
