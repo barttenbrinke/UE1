@@ -196,6 +196,8 @@ else()
     # on the hardware FPU. Measured: worst-case frame 99ms -> 70ms, with the
     # renderer's occlusion pass alone dropping 3012ms -> 1622ms per 100 frames.
     add_compile_options(-fsingle-precision-constant)
+    # sqrt.s directly instead of a range check plus a call to sqrtf for errno.
+    add_compile_options(-fno-math-errno)
 
     # Debuggability on real hardware. PSPLink reports the faulting PC and RA,
     # but tail-call optimisation overwrites RA, so crash dumps kept naming

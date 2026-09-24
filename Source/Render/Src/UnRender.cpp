@@ -808,9 +808,19 @@ static UBOOL SetupRaster( FTransform** Pts, INT NumPts, FSpanBuffer* Span, INT E
 			Bot          = P[Index];
 			Top          = P[1-Index];
 			INT*   Set   = HackRaster->X + Top->IntY*2 + Index;
+#ifdef __PSP__
+			// The Allegrex has no double-precision hardware: every DOUBLE op here
+			// was a libgcc call, per polygon edge. 16.16 fixed point from a FLOAT
+			// is exact to ~1/32768 px at 480 wide, which is far below what the
+			// span buffer can resolve.
+			FLOAT  YAdj  = Top->IntY - Top->ScreenY;
+			FLOAT  FDX   = 65536.f * (Bot->ScreenX - Top->ScreenX) / (Bot->ScreenY - Top->ScreenY);
+			DWORD  X     = appFloor( 65536.f * Top->ScreenX + YAdj * FDX );
+#else
 			DOUBLE YAdj  = Top->IntY - Top->ScreenY;
 			DOUBLE FDX   = 65536.0 * (Bot->ScreenX - Top->ScreenX) / (Bot->ScreenY - Top->ScreenY);
 			DWORD  X     = appFloor( 65536.0 * Top->ScreenX + YAdj * FDX );
+#endif
 			DWORD  DX    = appFloor( FDX );
 			INT    Count = Bot->IntY - Top->IntY;
 			while( Count >= 4 )

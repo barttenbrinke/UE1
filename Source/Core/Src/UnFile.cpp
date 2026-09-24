@@ -323,6 +323,7 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 	Math functions.
 -----------------------------------------------------------------------------*/
 
+#ifndef __PSP__ // single-precision inline versions live in UnFile.h
 CORE_API DOUBLE appExp( DOUBLE Value )
 {
 	return exp(Value);
@@ -337,65 +338,37 @@ CORE_API DOUBLE appFmod( DOUBLE Y, DOUBLE X )
 }
 CORE_API DOUBLE appSin( DOUBLE Value )
 {
-#ifdef __PSP__
-	return sinf( (FLOAT)Value );   // single precision: the PSP FPU has no double
-#else
 	return sin(Value);
-#endif
 }
 CORE_API DOUBLE appCos( DOUBLE Value )
 {
-#ifdef __PSP__
-	return cosf( (FLOAT)Value );   // single precision: the PSP FPU has no double
-#else
 	return cos(Value);
-#endif
 }
 CORE_API DOUBLE appTan( DOUBLE Value )
 {
-#ifdef __PSP__
-	return tanf( (FLOAT)Value );   // single precision: the PSP FPU has no double
-#else
 	return tan(Value);
-#endif
 }
 CORE_API DOUBLE appAtan( DOUBLE Value )
 {
-#ifdef __PSP__
-	return atanf( (FLOAT)Value );   // single precision: the PSP FPU has no double
-#else
 	return atan(Value);
-#endif
 }
 CORE_API DOUBLE appAtan2( DOUBLE Y, FLOAT X )
 {
-#ifdef __PSP__
-	return atan2f( (FLOAT)Y, X );
-#else
 	return atan2(Y,X);
-#endif
 }
 CORE_API DOUBLE appSqrt( DOUBLE Value )
 {
 #ifdef PLATFORM_PSVITA
 	return __builtin_sqrt(Value);
-#elif defined(__PSP__)
-	// sqrt.s is one FPU instruction; sqrt(double) is a soft-float call that
-	// the hardware profile put at 14% of the frame (2.1M calls, mostly from
-	// lighting, RenderSubsurface, DrawMesh and OccludeBsp).
-	return __builtin_sqrtf( (FLOAT)Value );
 #else
 	return sqrt(Value);
 #endif
 }
 CORE_API DOUBLE appPow( DOUBLE A, DOUBLE B )
 {
-#ifdef __PSP__
-	return powf( (FLOAT)A, (FLOAT)B );
-#else
 	return pow(A,B);
-#endif
 }
+#endif
 CORE_API UBOOL appIsNan( DOUBLE A )
 {
 	return _isnan(A)==1;

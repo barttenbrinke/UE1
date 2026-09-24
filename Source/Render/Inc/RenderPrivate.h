@@ -367,7 +367,7 @@ inline FLOAT SqrtApprox   (FLOAT F)
 	}
 	return F;								// compiles to fld [F].
 }
-#elif defined(PLATFORM_PSVITA)
+#elif defined(PLATFORM_PSVITA) || defined(__PSP__)
 inline FLOAT DivSqrtApprox(FLOAT F) { return 1.0f / __builtin_sqrtf(F); }
 inline FLOAT DivApprox    (FLOAT F) { return 1.0f / F; }
 inline FLOAT SqrtApprox   (FLOAT F) { return __builtin_sqrtf(F); }

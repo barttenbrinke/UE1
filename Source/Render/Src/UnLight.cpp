@@ -1929,29 +1929,43 @@ void FLightManager::SetupForSurf
 			// lighting then updates at a fixed rate rather than every frame.
 			//   [PSP]
 			//   LightMapHz=10    ; 0 = rebuild every frame (stock behaviour)
-			static DOUBLE PspLightMapPeriod = -1.0;
-			if( PspLightMapPeriod < 0.0 )
+			// The stamp stays a DOUBLE slot in the cache item for layout, but the
+			// age test is single precision: the PSP has no double hardware and
+			// this runs once per lit surface per frame. CurrentTime is relative
+			// to startup on PSP, so a FLOAT keeps millisecond resolution.
+			static FLOAT PspLightMapPeriod = -1.f;
+			if( PspLightMapPeriod < 0.f )
 			{
 				INT Hz = 10;
 				GetConfigInt( "PSP", "LightMapHz", Hz );
-				PspLightMapPeriod = ( Hz > 0 ) ? ( 1.0 / (DOUBLE)Hz ) : 0.0;
+				PspLightMapPeriod = ( Hz > 0 ) ? ( 1.f / (FLOAT)Hz ) : 0.f;
 				debugf( NAME_Log, "PSPPERF: dynamic lightmap rate = %d Hz", Hz );
 			}
-			const DOUBLE PspAge = Stream ? ( Frame->Viewport->CurrentTime - *(DOUBLE*)Stream ) : 0.0;
-			if( !Stream || PspAge < 0.0 || PspAge >= PspLightMapPeriod )
+			const FLOAT PspNow = (FLOAT)Frame->Viewport->CurrentTime;
+			const FLOAT PspAge = Stream ? ( PspNow - *(FLOAT*)Stream ) : 0.f;
+			if( !Stream || PspAge < 0.f || PspAge >= PspLightMapPeriod )
 #else
 			if( !Stream || *(DOUBLE*)Stream!=Frame->Viewport->CurrentTime )
 #endif
 			{
 				if( !Stream )
 					Stream = (DWORD*)GCache.Create( LightMap.CacheID, TopItemToUnlock[-1], (LightMap.USize*LightMap.VClamp + 3) * sizeof(DWORD), DEFAULT_ALIGNMENT, LightMap.USize*(LightMap.VSize-LightMap.VClamp) );
+#ifdef __PSP__
+				*(FLOAT*)Stream = PspNow;
+#else
 				*(DOUBLE*)Stream = Frame->Viewport->CurrentTime;
+#endif
 				Stream += 2;
 				LightMap.MaxColor = (FColor*)Stream++;
 			}
 			else
 			{
+#ifndef __PSP__
+				// (On PSP the stamp is left alone: re-stamping on reuse would
+				// reset the age every frame and a throttled lightmap would
+				// never rebuild.)
 				*(DOUBLE*)Stream = Frame->Viewport->CurrentTime;
+#endif
 				Stream += 2;
 				LightMap.MaxColor = (FColor*)Stream++;
 				goto SkipDynamicLight;
