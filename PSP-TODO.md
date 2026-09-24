@@ -9,16 +9,6 @@ Where a heavy frame goes (ms, castle view): BSP occlusion ~33 (traversal
 13, clip 7, span buffer 7, edge raster 5, bounds 1.4), surface drawing ~15,
 meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 
-## Being measured now (hardware A/B queued)
-
-- [ ] No software occlusion at all (`-OCCLUDEMIN=100000000`): the
-      Quake-port approach, frustum + Z-buffer. UE1 has no PVS, so this is
-      the overdraw upper bound, not a plan.
-- [ ] Compiler flags: `-mno-check-zero-division` (drops the trap check GCC
-      inserts on every integer divide; now on by default). `-Os` vs `-O2`
-      for the 16 KB I-cache (`-DPSP_OS=ON`, build-psplink-os). `-G0` is
-      already forced by prxgen.
-
 ## Simple, to do next
 
 - [ ] Music volume/effects balance after the louder defaults
@@ -43,6 +33,14 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       file per song; UE1 switches sections with xmp_set_position).
 
 ## Rejected on hardware numbers (do not retry)
+
+- No software occlusion at all (frustum + Z-buffer, the Quake-port way):
+  13.4 fps mean / 7.1 worst vs 16.3 / 10.8. Surface drawing doubles and
+  mesh work more than doubles (actors behind walls are no longer culled).
+  UE1 has no PVS; the span buffer earns its 30 ms.
+- `-Os`: 15.5 mean / 9.4 worst vs 16.3 / 10.8; occlusion +13%, mesh +25%.
+  The 16 KB I-cache does not make smaller code faster here. Stay on -O2.
+- `-mno-check-zero-division`: 16.1 vs 16.3, noise. Left on (harmless).
 
 - Software prefetch (`cache 0x1e` fills for the child nodes and a node's
   points one step ahead): 16.2 vs 16.3 fps mean, 10.6 vs 10.8 worst. The
