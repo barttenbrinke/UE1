@@ -49,19 +49,20 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 - [ ] Media Engine, next candidates now that the bridge works: OpenAL's
       software mixer (audioOutput thread, priority 22 on the main CPU), or
       the mesh pass once its CPU share is understood.
-- [~] Botmatch "out of memory": engine copies of sound samples (3.1 MB in
-      the snapshot) and static package texture mips (4.6 MB) are now freed
-      after upload; evicted textures are re-read from their package
-      (`appReloadObject`). Emulator stress test passed (1 MB budget, 678
-      reloads). Still to verify: a botmatch on the hardware. `[PSP]
-      FreeSoundData` / `FreeTextureData` turn it off.
-      Emulator finding: DmRadikus fails while LOADING (UMesh::Serialize,
-      one 611 KB vertex array of 152,820 FMeshVert), before any texture is
-      uploaded or sound registered, so the frees cannot help that case;
-      PPSSPP's arena is ~27 MB against ~38 MB on the PSP, so it is not the
-      judge. The OOM message now prints heap used/free and the largest
-      block. If the PSP still fails: lower TextureBudgetMB, or load the
-      big mesh arrays before textures (fragmentation).
+- [~] Botmatch "out of memory" (2026-09-24 evening): package texture
+      texels are now dropped as they load (UTexture::Serialize; the driver
+      re-reads them via appReloadObject for the first upload) and sound
+      samples are freed once OpenAL holds them. Measured over PSPLink with
+      `./Unreal.prx DmRadikus.unr?Game=UnrealI.DeathMatchGame`: the map now
+      LOADS on the PSP (22.9 s) and renders at 19.6 fps -- with 138 KB of
+      heap free, so in-game allocations can still fail. The PSP's heap
+      reaches ~44 MB. The object list after load accounts for only ~12 MB
+      (meshes 6.6, level geometry 1.6; the "Sound" line reports original
+      sizes); ~30 MB sit outside UObjects: OpenAL sample copies, the music
+      module, GCache (CacheSizeMegs), memory stacks, file windows, pspgl,
+      allocator overhead. Next: measure those by disabling subsystems
+      ([Engine.Engine] AudioDevice= empty in the emulator), then trim
+      the biggest. `[PSP] MemDump=1` lists objects after each load.
 
 ## Rejected on hardware numbers (do not retry)
 
