@@ -494,6 +494,107 @@ static void Pipe( FTransform& Result, const FSceneNode* Frame, const FVector& In
 	}
 }
 
+#ifdef __PSP__
+//
+// VFPU version of Pipe(). The frame constants are loaded once per
+// ClipBspSurf call (PspVfpuLoadFrame): the view axes as the columns of
+// matrix 0, the origin in C100 and the four clip factors in C300, in the
+// FSceneNode order XM, YM, XP, YP. Matrices 0-3 are ours; pspgl keeps its
+// matrix stack in 4-7.
+//
+// Per point: 3 loads, subtract, one 3x3 transform (with the axes loaded as
+// columns, vtfm3 with M000 gives the dot with each axis; E000 gave the
+// transposed product), one scale + one add with a
+// swizzled/negated operand for the four clip values, 3 + 1 stores. The
+// outcode comes from the sign bits of the stored clip values.
+//   [PSP] Vfpu=1   ; 0 = scalar Pipe()
+//
+#include <pspvfpu.h>
+#include <psprtc.h>
+static INT GPspUseVfpu = -1;
+static struct pspvfpu_context* GPspVfpuCtx = NULL;
+static FLOAT GPspClipTmp[4] __attribute__((aligned(16)));
+
+static inline void PspVfpuLoadFrame( const FSceneNode* Frame )
+{
+	// FCoords is Origin, XAxis, YAxis, ZAxis back to back, and the clip
+	// factors are four consecutive floats, so unaligned quad loads read
+	// nothing outside the FSceneNode.
+	const FCoords& C = Frame->Coords;
+	asm volatile(
+		"ulv.q C000, 0(%0)\n"
+		"ulv.q C010, 0(%1)\n"
+		"ulv.q C020, 0(%2)\n"
+		"ulv.q C100, 0(%3)\n"
+		"ulv.q C300, 0(%4)\n"
+		: : "r"(&C.XAxis), "r"(&C.YAxis), "r"(&C.ZAxis), "r"(&C.Origin), "r"(&Frame->PrjXM) : "memory" );
+}
+
+static inline void PipeVfpu( FTransform& Result, const FSceneNode* Frame, const FVector& InVector )
+{
+	asm volatile(
+		"lv.s    S200, 0(%1)\n"
+		"lv.s    S201, 4(%1)\n"
+		"lv.s    S202, 8(%1)\n"
+		"vsub.t  C200, C200, C100\n"
+		"vtfm3.t C210, M000, C200\n"
+		"vscl.q  C220, C300, S212\n"
+		"vadd.q  C220, C220, C210[x,y,-x,-y]\n"
+		"sv.s    S210, 0(%0)\n"
+		"sv.s    S211, 4(%0)\n"
+		"sv.s    S212, 8(%0)\n"
+		"sv.q    C220, 0(%2)\n"
+		: : "r"(&Result.Point), "r"(&InVector), "r"(GPspClipTmp) : "memory" );
+	const DWORD* Cl = (const DWORD*)GPspClipTmp;
+	Result.Flags =
+		( ( Cl[0] >> 31 ) ? FVF_OutXMin : 0 ) | ( ( Cl[1] >> 31 ) ? FVF_OutYMin : 0 ) |
+		( ( Cl[2] >> 31 ) ? FVF_OutXMax : 0 ) | ( ( Cl[3] >> 31 ) ? FVF_OutYMax : 0 );
+	if( !Result.Flags )
+	{
+		Result.RZ      = Frame->Proj.Z / Result.Point.Z;
+		Result.ScreenX = Result.Point.X * Result.RZ + Frame->FX15;
+		Result.ScreenY = Result.Point.Y * Result.RZ + Frame->FY15;
+		Result.IntY    = appFloor( Result.ScreenY );
+	}
+}
+
+// First use: claim the VFPU for this thread, then time both versions on
+// cached data so the log shows the raw arithmetic gain independent of
+// the BSP's memory behaviour.
+static void PspVfpuInit( const FSceneNode* Frame )
+{
+	GPspUseVfpu = 1;
+	GetConfigInt( "PSP", "Vfpu", GPspUseVfpu );
+	if( !GPspUseVfpu )
+	{
+		debugf( NAME_Log, "PSPPERF: VFPU pipe = off" );
+		return;
+	}
+	GPspVfpuCtx = pspvfpu_initcontext();
+	pspvfpu_use_matrices( NULL, 0, VMAT0 | VMAT1 | VMAT2 | VMAT3 );
+
+	static FVector Pts[16];
+	for( INT i=0; i<16; i++ )
+		Pts[i] = FVector( (i%4)*37.f - 50.f, (i%5)*23.f - 40.f, 100.f + i*11.f );
+	FTransform T; DWORD Sum=0;
+	const INT N = 20000;
+	u64 T0, T1, T2;
+	sceRtcGetCurrentTick( &T0 );
+	for( INT k=0; k<N; k++ )
+		for( INT i=0; i<16; i++ ) { Pipe( T, Frame, Pts[i] ); Sum += T.Flags + (DWORD)T.IntY; }
+	sceRtcGetCurrentTick( &T1 );
+	PspVfpuLoadFrame( Frame );
+	for( INT k=0; k<N; k++ )
+		for( INT i=0; i<16; i++ ) { PipeVfpu( T, Frame, Pts[i] ); Sum += T.Flags + (DWORD)T.IntY; }
+	sceRtcGetCurrentTick( &T2 );
+	// Cross-check one point.
+	FTransform A, B; Pipe( A, Frame, Pts[5] ); PipeVfpu( B, Frame, Pts[5] );
+	debugf( NAME_Log, "PSPPERF: VFPU pipe bench: scalar %.0f ns/pt, vfpu %.0f ns/pt (%d pts); check scalar (%.3f %.3f %.3f f%d) vfpu (%.3f %.3f %.3f f%d) sum %u",
+		(FLOAT)( (T1-T0) * 1000.0 / (N*16) ), (FLOAT)( (T2-T1) * 1000.0 / (N*16) ), N*16,
+		A.Point.X, A.Point.Y, A.Point.Z, A.Flags, B.Point.X, B.Point.Y, B.Point.Z, B.Flags, (unsigned)Sum );
+}
+#endif
+
 //
 // Clipping helper.
 //
@@ -536,6 +637,12 @@ INT URender::ClipBspSurf( INT iNode, FTransform**& Result )
 	FVert*	  VertPool	= &GVerts[Node->iVertPool];
 	BYTE      Outcode   = FVF_OutReject;
 	BYTE      AllCodes  = 0;
+#ifdef __PSP__
+	if( GPspUseVfpu < 0 )
+		PspVfpuInit( GFrame );
+	if( GPspUseVfpu )
+		PspVfpuLoadFrame( GFrame );
+#endif
 	for( INT i=0; i<NumPts; i++ )
 	{
 		INT pPoint = VertPool[i].pVertex;
@@ -544,6 +651,11 @@ INT URender::ClipBspSurf( INT iNode, FTransform**& Result )
 		{
 			S.Stamp = Stamp;
 			S.Point = new(VectorMem)FTransform;
+#ifdef __PSP__
+			if( GPspUseVfpu )
+				PipeVfpu( *S.Point, GFrame, GPoints[pPoint] );
+			else
+#endif
 			Pipe( *S.Point, GFrame, GPoints[pPoint] );
 			STAT(GStat.NumPoints++);
 		}

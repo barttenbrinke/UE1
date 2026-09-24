@@ -334,6 +334,7 @@ static SQWORD GPspAccIllum = 0, GPspAccOcclusion = 0, GPspAccMesh = 0, GPspAccPo
 static INT GPspAccClip = 0, GPspAccRaster = 0, GPspAccSpan = 0;   // OccludeBsp's own sub-timers
 static INT GPspAccMeshFrame = 0;                                     // UMesh::GetFrame (keyframe lerp + transform)
 static INT GPspAccMeshProc = 0, GPspAccMeshLight = 0, GPspAccMeshSub = 0, GPspAccMeshClip = 0, GPspAccMeshTmap = 0;
+static INT GPspAccBox = 0;                                            // URender::BoundVisible (node bound tests)
 #endif
 
 #define GL_CHECK_EXT(ext) GLAD_GL_ ## ext
@@ -685,16 +686,17 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccOcclusion),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMesh),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccPolyV) );
-			debugf( NAME_Log, "PSPPERF:   occlusion: clip %.0fms raster %.0fms span %.0fms (rest is traversal/bounds); mesh getframe %.0fms",
+			debugf( NAME_Log, "PSPPERF:   occlusion: clip %.0fms raster %.0fms span %.0fms bounds %.0fms (rest is traversal); mesh getframe %.0fms",
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccClip),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccRaster),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccSpan),
+				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccBox),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshFrame) );
 			debugf( NAME_Log, "PSPPERF:   mesh: process %.0fms light %.0fms sub %.0fms clip %.0fms tmap %.0fms",
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshProc), (FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshLight),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshSub), (FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshClip),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshTmap) );
-			GPspAccClip = GPspAccRaster = GPspAccSpan = GPspAccMeshFrame = 0;
+			GPspAccClip = GPspAccRaster = GPspAccSpan = GPspAccMeshFrame = GPspAccBox = 0;
 			GPspAccMeshProc = GPspAccMeshLight = GPspAccMeshSub = GPspAccMeshClip = GPspAccMeshTmap = 0;
 			GPspAccBind = GPspAccImage = GPspAccComplex = GPspAccGouraud = GPspAccTile = 0;
 			GPspAccIllum = GPspAccOcclusion = GPspAccMesh = GPspAccPolyV = 0;
@@ -773,6 +775,7 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 	GPspAccRaster    += (INT)GStat.RasterTime;
 	GPspAccSpan      += (INT)GStat.SpanTime;
 	GPspAccMeshFrame += (INT)GStat.MeshGetFrameTime;
+	GPspAccBox       += (INT)GStat.BoxTime;
 	GPspAccMeshProc  += (INT)GStat.MeshProcessTime;
 	GPspAccMeshLight += (INT)GStat.MeshLightTime + (INT)GStat.MeshLightSetupTime;
 	GPspAccMeshSub   += (INT)GStat.MeshSubTime;
