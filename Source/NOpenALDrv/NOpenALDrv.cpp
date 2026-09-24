@@ -91,9 +91,10 @@ static void PspMusClose()
 
 // Music/<Name>.wav next to System/. Returns 1 and takes over playback when the
 // file exists and is 16-bit mono PCM at a rate that divides 44100.
-static UBOOL PspMusOpen( const char* Name )
+static UBOOL PspMusOpen( const char* Name, INT Volume255 )
 {
 	PspMusClose();
+	GPspMusVol = Volume255 * PSP_AUDIO_VOLUME_MAX / 255;   // set here too; the fade path updates it later
 	char Path[300];
 	appStrncpy( Path, appBaseDir(), sizeof(Path) );            // ".../Unreal/System/"
 	INT L = appStrlen( Path );
@@ -472,7 +473,7 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 		return;
 
 #ifdef __PSP__
-	if( PspMusOpen( Music->GetName() ) )
+	if( PspMusOpen( Music->GetName(), MusicVolume ) )
 	{
 		Music->Handle = (void*)2;
 		MusicIsLoaded = true;
