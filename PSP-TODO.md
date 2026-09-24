@@ -27,6 +27,13 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 - [ ] OpenAL mixer on the Media Engine: no longer worth it (2% without
       reverb). Reverb on the ME would be, if the reverb is wanted back.
 
+- [ ] Level load time (hardware only): the load profile had 8.6k window
+      refills for 27 MB, i.e. ~3 KB per Memory Stick read, because the
+      first refill after a seek starts at 2 KB. Per-read latency likely
+      dominates. `-REFILLKB=N` (2..16) and the new "LoadMap ... took" log
+      line give the A/B; bulk-serialising POD arrays (FColor is read as
+      four separate bytes, FMeshVert as one int) is the follow-up.
+
 ## Bigger, in order of expected payoff
 
 - [ ] Hot/cold data layout for BSP nodes / points / vertex pool

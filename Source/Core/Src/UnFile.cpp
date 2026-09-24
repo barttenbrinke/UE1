@@ -1038,10 +1038,20 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 		// that does not continue the previous window starts small and only
 		// grows while the reads stay sequential.
 		const UBOOL bSequential = Slot->BufLen > 0 && Slot->FilePos == Slot->BufBase + Slot->BufLen;
+		// The first refill after a seek is tunable for a hardware A/B: the
+		// Memory Stick's per-read latency may make fewer, larger reads cheaper
+		// than the 2KB start that minimised bytes. -REFILLKB=N (2..16).
+		static INT MinRefill = -1;
+		if( MinRefill < 0 )
+		{
+			INT KB = PSP_FILE_MINREFILL / 1024;
+			Parse( appCmdLine(), "REFILLKB=", KB );
+			MinRefill = Clamp( KB, 1, (INT)( PSP_FILE_BUFSZ / 1024 ) ) * 1024;
+		}
 		if( bSequential && Slot->NextRefill > 0 )
 			Slot->NextRefill = Min( Slot->NextRefill * 2, (INT)PSP_FILE_BUFSZ );
 		else
-			Slot->NextRefill = PSP_FILE_MINREFILL;
+			Slot->NextRefill = MinRefill;
 		if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
 			break;
 		int N = sceIoRead( Slot->Fd, Slot->Buffer, Slot->NextRefill );
