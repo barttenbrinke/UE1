@@ -56,8 +56,13 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       the ceiling on the PSP). `[PSP] FreeMeshData/FreeSoundData/
       FreeTextureData` turn each off. Boot crash of the first texture
       version (procedural textures reading freed source texels) fixed by
-      PspEnsureTexels + TF_PspPinned. To verify on the PSP: boot, level
-      one, a botmatch from the menu. Background: the 1998 engine leaned
+      PspEnsureTexels + TF_PspPinned. Verified on the PSP (card 7846f886):
+      flyby clean, DmRadikus loads with heap 39.4 MB after load / 41.1 MB
+      running (43 KB free) -- the emulator's 32 MB does not include the
+      Media Engine music (module bytes + libxmp's copy, ~7 MB). Next:
+      UMusic::Data freed after xmp_load (built, untested), then an A/B on
+      the PSP with `-MUSICME=0` to size the rest of the music cost.
+      Bart to try a botmatch from the menu on 7846f886. Background: the 1998 engine leaned
       on the PC's virtual memory; retail patches later added TLazyArray
       for mips and sounds, which this source snapshot predates.
 

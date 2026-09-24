@@ -142,9 +142,10 @@ static UBOOL PspMeReady()
 	GPspMeInit = -1;
 	INT Use = 1;
 	GetConfigInt( "PSP", "MusicME", Use );
+	Parse( appCmdLine(), "MUSICME=", Use );   // hardware A/B without an ini edit
 	if( !Use )
 	{
-		debugf( NAME_Log, "PSPMUSIC: Media Engine disabled by ini" );
+		debugf( NAME_Log, "PSPMUSIC: Media Engine disabled (ini or -MUSICME=0)" );
 		return 0;
 	}
 	GetConfigInt( "PSP", "MusicMERate", GPspMeRate );
@@ -722,7 +723,15 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 
 	FScopedLock Lock( MusicMutex );
 
-	if( Music->Handle || !Music->Data.Num() )
+	if( Music->Handle )
+		return;
+#ifdef __PSP__
+	// The module bytes are dropped once libxmp has parsed them (below); a song
+	// that comes round again is re-read from its package.
+	if( !Music->Data.Num() && Music->GetLinker() )
+		appReloadObject( Music );
+#endif
+	if( !Music->Data.Num() )
 		return;
 
 #ifdef __PSP__
@@ -736,6 +745,7 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 			{
 				Music->Handle = (void*)3;
 				MusicIsLoaded = true;
+				Music->Data.Empty();   // libxmp holds its own copy of everything it needs
 				return;
 			}
 			if( Err >= 0 )
