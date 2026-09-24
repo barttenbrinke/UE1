@@ -39,7 +39,10 @@ done
 # Needs xmp (brew install libxmp xmp); without it the console falls back to
 # mixing the module in real time. Renders are derived from the CD data and
 # stay out of the repo. Existing renders are kept.
-if command -v xmp >/dev/null 2>&1; then
+# Since the Media Engine renders the modules live ([PSP] MusicME=1, the
+# default), the renders are only a fallback for consoles where the ME bridge
+# cannot load. Opt in with PSP_WAV_MUSIC=1 to produce them (127 MB).
+if [[ "${PSP_WAV_MUSIC:-0}" == "1" ]] && command -v xmp >/dev/null 2>&1; then
   echo "    Music renders"
   for f in "$ASSETS"/Music/*.umx; do
     n=$(basename "$f" .umx)

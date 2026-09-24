@@ -35,6 +35,168 @@ static short* GPspMusSrc = NULL;
 static short* GPspMusOut = NULL;
 static UBOOL  GPspMusStreaming = 0;
 
+// ---- Music rendered on the Media Engine ------------------------------------
+//
+// The PSP's second Allegrex core is idle in homebrew. With mcidclan's me-core
+// (a small kernel bridge PRX it extracts next to the EBOOT, plus an entry
+// point that runs on the ME) libxmp renders the module there: the main CPU
+// loads the module and starts the player as in the stock path, then hands the
+// context to the ME, which fills a ring of PCM blocks in uncached memory. The
+// streamer thread above feeds those blocks to the hardware channel. Section
+// changes and stop are a command word the ME polls between blocks.
+//
+// Rules learned on the hardware: set $gp on entry (psp-gcc keeps small data
+// gp-relative and the ME entry does not set it); everything the ME touches
+// that the CPU wrote must be written back first (meLibDefaultInit and the
+// start command do that); the ME writes back and drops its cache on stop so
+// no dirty line of a freed context lands later. The render loop makes no
+// syscalls: xmp_play_buffer and xmp_set_position allocate nothing.
+//   [PSP] MusicME=1        ; 0 = do not use the Media Engine
+//   [PSP] MusicMERate=44100; render rate on the ME; must divide 44100
+//   [PSP] MusicMEStereo=1  ; stereo at 44100 straight into the channel (else mono, upsampled)
+//
+#include <me-core-mapper/me-core.h>   // defines the ME entry glue: include from ONE file only
+enum { PSP_ME_BLOCKS = 8 };
+struct FPspMeShared
+{
+	volatile u32 Cmd;         // 1 start (Ctx), 2 set position (Arg), 3 stop
+	volatile u32 Arg;
+	volatile u32 Ctx;         // xmp_context, cached address
+	volatile u32 Status;      // 0 idle, 1 rendering
+	volatile u32 Write;       // blocks produced (ME owns)
+	volatile u32 Read;        // blocks consumed (CPU owns)
+	volatile u32 Heartbeat;   // ME loop count, for the log
+	volatile u32 Ring;        // uncached address of PSP_ME_BLOCKS blocks
+	volatile u32 BlockBytes;
+	volatile u32 Err;         // last xmp_play_buffer error
+	volatile u32 Blocks;      // blocks rendered in total
+};
+static FPspMeShared* GPspMe = NULL;     // uncached alias
+static INT   GPspMeInit   = 0;          // 0 untried, 1 ready, -1 unavailable
+static UBOOL GPspMeActive = 0;          // current song renders on the ME
+static INT   GPspMeRate   = 44100;
+static INT   GPspMeStereo = 1;
+
+// Runs on the Media Engine, forever.
+__attribute__((noinline, aligned(4))) void meLibOnProcess( void )   // declared by me-core with C++ linkage
+{
+	asm volatile( "la $gp, _gp" ::: "memory" );
+	meLibDcacheWritebackInvalidateAll();
+	FPspMeShared* Me = GPspMe;
+	xmp_context Ctx = NULL;
+	for( ;; )
+	{
+		Me->Heartbeat = Me->Heartbeat + 1;
+		const u32 Cmd = Me->Cmd;
+		if( Cmd )
+		{
+			Me->Cmd = 0;
+			if( Cmd == 1 )
+			{
+				meLibDcacheWritebackInvalidateAll();   // the CPU just loaded a module
+				Ctx = (xmp_context)Me->Ctx;
+				Me->Write = 0;
+				Me->Err = 0;
+				meLibSync();
+				Me->Status = 1;
+			}
+			else if( Cmd == 2 )
+			{
+				if( Ctx )
+					xmp_set_position( Ctx, (int)Me->Arg );
+				Me->Write = Me->Read;   // drop what was queued: the section change is immediate
+				meLibSync();
+			}
+			else if( Cmd == 3 )
+			{
+				Ctx = NULL;
+				meLibDcacheWritebackInvalidateAll();   // nothing dirty may survive the context's free
+				meLibSync();
+				Me->Status = 0;
+			}
+		}
+		if( Ctx && ( Me->Write - Me->Read ) < PSP_ME_BLOCKS )
+		{
+			void* Block = (void*)( Me->Ring + ( Me->Write % PSP_ME_BLOCKS ) * Me->BlockBytes );
+			const int R = xmp_play_buffer( Ctx, Block, (int)Me->BlockBytes, 0 );
+			if( R < 0 )
+				Me->Err = (u32)R;
+			meLibSync();
+			Me->Write = Me->Write + 1;
+			Me->Blocks = Me->Blocks + 1;
+		}
+		else
+			meLibDelayPipeline();
+	}
+}
+
+static UBOOL PspMeReady()
+{
+	if( GPspMeInit )
+		return GPspMeInit > 0;
+	GPspMeInit = -1;
+	INT Use = 1;
+	GetConfigInt( "PSP", "MusicME", Use );
+	if( !Use )
+	{
+		debugf( NAME_Log, "PSPMUSIC: Media Engine disabled by ini" );
+		return 0;
+	}
+	GetConfigInt( "PSP", "MusicMERate", GPspMeRate );
+	if( GPspMeRate <= 0 || ( PSP_MUS_OUTRATE % GPspMeRate ) != 0 )
+		GPspMeRate = PSP_MUS_OUTRATE;
+	GetConfigInt( "PSP", "MusicMEStereo", GPspMeStereo );
+	if( GPspMeRate != PSP_MUS_OUTRATE )
+		GPspMeStereo = 0;   // the upsampling path is mono only
+	const u32 BlockBytes = PSP_MUS_FRAMES * ( GPspMeStereo ? 4 : 2 );
+	void* Shared = memalign( 64, ( sizeof(FPspMeShared) + 63 ) & ~63 );
+	void* Ring   = memalign( 64, PSP_ME_BLOCKS * BlockBytes );
+	if( !Shared || !Ring )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: no memory for the Media Engine ring" );
+		return 0;
+	}
+	appMemset( Shared, 0, ( sizeof(FPspMeShared) + 63 ) & ~63 );
+	appMemset( Ring, 0, PSP_ME_BLOCKS * BlockBytes );
+	sceKernelDcacheWritebackInvalidateRange( Shared, ( sizeof(FPspMeShared) + 63 ) & ~63 );
+	sceKernelDcacheWritebackInvalidateRange( Ring, PSP_ME_BLOCKS * BlockBytes );
+	GPspMe = (FPspMeShared*)( (u32)Shared | 0x40000000 );
+	GPspMe->Ring       = (u32)Ring | 0x40000000;
+	GPspMe->BlockBytes = BlockBytes;
+	const int Table = meLibDefaultInit();   // extracts + loads the kernel bridge, starts the ME on meLibOnProcess
+	if( Table < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: Media Engine init failed (%i); music stays on the CPU", Table );
+		return 0;
+	}
+	sceKernelDelayThread( 20000 );
+	debugf( NAME_Log, "PSPMUSIC: Media Engine up (table %i, heartbeat %u), render rate %i Hz, %i blocks of %i frames",
+		Table, (unsigned)GPspMe->Heartbeat, GPspMeRate, (int)PSP_ME_BLOCKS, (int)PSP_MUS_FRAMES );
+	GPspMeInit = 1;
+	return 1;
+}
+
+static UBOOL PspMeWait( u32 Status, INT Ms )
+{
+	for( INT i=0; i<Ms; i++ )
+	{
+		if( GPspMe->Status == Status )
+			return 1;
+		sceKernelDelayThread( 1000 );
+	}
+	return 0;
+}
+
+static void PspMeStop()
+{
+	if( !GPspMeActive )
+		return;
+	GPspMe->Cmd = 3;
+	if( !PspMeWait( 0, 500 ) )
+		debugf( NAME_Warning, "PSPMUSIC: Media Engine did not acknowledge stop (heartbeat %u)", (unsigned)GPspMe->Heartbeat );
+	GPspMeActive = 0;
+}
+
 static int PspMusThreadProc( SceSize, void* )
 {
 	short Last = 0;
@@ -43,6 +205,40 @@ static int PspMusThreadProc( SceSize, void* )
 		if( !GPspMusPlaying )
 		{
 			sceKernelDelayThread( 20000 );
+			continue;
+		}
+		if( GPspMeActive )
+		{
+			// Media Engine source: wait for a rendered block, play it in place
+			// (ratio 1) or upsample it as the file path does.
+			if( GPspMe->Write == GPspMe->Read )
+			{
+				sceKernelDelayThread( 1000 );
+				continue;
+			}
+			const short* Block = (const short*)( GPspMe->Ring + ( GPspMe->Read % PSP_ME_BLOCKS ) * GPspMe->BlockBytes );
+			if( GPspMusRatio == 1 )
+				sceAudioOutputBlocking( GPspMusChan, GPspMusVol, (void*)Block );
+			else
+			{
+				short* O = GPspMusOut;
+				for( int i = 0; i < PSP_MUS_FRAMES; ++i )
+				{
+					const int S = Block[i];
+					for( int k = 1; k <= GPspMusRatio; ++k )
+						*O++ = (short)( Last + ( S - Last ) * k / GPspMusRatio );
+					Last = (short)S;
+				}
+				sceAudioOutputBlocking( GPspMusChan, GPspMusVol, GPspMusOut );
+			}
+			GPspMe->Read = GPspMe->Read + 1;
+			static u32 Logged = 0;
+			if( ( GPspMe->Read - Logged ) >= 100 )   // ~4.6 s at 44100
+			{
+				Logged = GPspMe->Read;
+				debugf( NAME_Log, "PSPMUSIC: ME blocks %u queued %u err %d heartbeat %u",
+					(unsigned)GPspMe->Blocks, (unsigned)( GPspMe->Write - GPspMe->Read ), (int)GPspMe->Err, (unsigned)GPspMe->Heartbeat );
+			}
 			continue;
 		}
 		if( GPspMusRewind )
@@ -76,6 +272,7 @@ static int PspMusThreadProc( SceSize, void* )
 
 static void PspMusClose()
 {
+	PspMeStop();
 	if( GPspMusThread >= 0 )
 	{
 		GPspMusRun = 0;
@@ -87,6 +284,47 @@ static void PspMusClose()
 	if( GPspMusFd >= 0 )   { sceIoClose( GPspMusFd ); GPspMusFd = -1; }
 	GPspMusStreaming = 0;
 	GPspMusPlaying   = 0;
+}
+
+// Hand a started libxmp player to the Media Engine and open the hardware
+// channel for it. Returns 0 (and leaves the player untouched) if the ME is
+// not available.
+static UBOOL PspMeOpen( xmp_context Ctx, const char* Name, INT Volume255 )
+{
+	if( !PspMeReady() )
+		return 0;
+	PspMusClose();
+	GPspMusVol   = Volume255 * PSP_AUDIO_VOLUME_MAX / 255;
+	GPspMusRatio = PSP_MUS_OUTRATE / GPspMeRate;
+	if( !GPspMusOut ) GPspMusOut = (short*)memalign( 64, PSP_MUS_FRAMES * 2 * 8 );
+	GPspMusChan = sceAudioChReserve( PSP_AUDIO_NEXT_CHANNEL, PSP_MUS_FRAMES * GPspMusRatio, GPspMeStereo ? PSP_AUDIO_FORMAT_STEREO : PSP_AUDIO_FORMAT_MONO );
+	if( !GPspMusOut || GPspMusChan < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: no hardware channel for the ME (%i)", GPspMusChan );
+		GPspMusChan = -1; return 0;
+	}
+	GPspMe->Read = 0;
+	GPspMe->Ctx  = (u32)Ctx;
+	sceKernelDcacheWritebackInvalidateAll();   // the module and player state the CPU just built
+	GPspMe->Cmd = 1;
+	if( !PspMeWait( 1, 500 ) )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: Media Engine did not start %s (heartbeat %u)", Name, (unsigned)GPspMe->Heartbeat );
+		sceAudioChRelease( GPspMusChan ); GPspMusChan = -1;
+		return 0;
+	}
+	GPspMeActive = 1;
+	GPspMusFd = -1;
+	GPspMusRun = 1; GPspMusPlaying = 0; GPspMusRewind = 0;
+	GPspMusThread = sceKernelCreateThread( "psp_music", PspMusThreadProc, 0x10, 16 * 1024, THREAD_ATTR_USER, NULL );
+	if( GPspMusThread < 0 || sceKernelStartThread( GPspMusThread, 0, NULL ) < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: thread failed (%i)", GPspMusThread );
+		GPspMusThread = -1; PspMusClose(); return 0;
+	}
+	GPspMusStreaming = 1;
+	debugf( NAME_Log, "PSPMUSIC: %s renders on the Media Engine (%i Hz %s x%i) on hardware channel %i", Name, GPspMeRate, GPspMeStereo ? "stereo" : "mono", GPspMusRatio, GPspMusChan );
+	return 1;
 }
 
 // Music/<Name>.wav next to System/. Returns 1 and takes over playback when the
@@ -473,6 +711,24 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 		return;
 
 #ifdef __PSP__
+	if( PspMeReady() )
+	{
+		INT Err = xmp_load_module_from_memory( MusicCtx, &Music->Data(0), Music->Data.Num() );
+		if( Err >= 0 )
+		{
+			Err = xmp_start_player( MusicCtx, GPspMeRate, GPspMeStereo ? 0 : XMP_FORMAT_MONO );
+			if( Err >= 0 && PspMeOpen( MusicCtx, Music->GetName(), MusicVolume ) )
+			{
+				Music->Handle = (void*)3;
+				MusicIsLoaded = true;
+				return;
+			}
+			if( Err >= 0 )
+				xmp_end_player( MusicCtx );
+			xmp_release_module( MusicCtx );
+		}
+		debugf( NAME_Warning, "PSPMUSIC: `%s` could not go to the Media Engine (%d), trying the file", Music->GetName(), Err );
+	}
 	if( PspMusOpen( Music->GetName(), MusicVolume ) )
 	{
 		Music->Handle = (void*)2;
@@ -512,9 +768,13 @@ void UNOpenALAudioSubsystem::UnregisterMusic( UMusic* Music )
 #ifdef __PSP__
 	if( GPspMusStreaming )
 	{
-		PspMusClose();
-		MusicIsLoaded = false;
-		return;
+		const UBOOL WasME = GPspMeActive;
+		PspMusClose();          // stops the ME (and waits) before the context is torn down below
+		if( !WasME )
+		{
+			MusicIsLoaded = false;
+			return;
+		}
 	}
 #endif
 	if( MusicCtx )
@@ -807,7 +1067,13 @@ void UNOpenALAudioSubsystem::PlayMusic()
 #ifdef __PSP__
 	if( GPspMusStreaming )
 	{
-		GPspMusRewind  = 1;   // sections are not rendered separately; restart the loop
+		if( GPspMeActive )
+		{
+			GPspMe->Arg = (u32)MusicSection;   // interactive music: the ME jumps to the section
+			GPspMe->Cmd = 2;
+		}
+		else
+			GPspMusRewind = 1;   // file: sections are not rendered separately; restart the loop
 		GPspMusPlaying = 1;
 		MusicIsPlaying = true;
 		return;

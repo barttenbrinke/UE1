@@ -19,18 +19,18 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 - [ ] Hot/cold data layout for BSP nodes / points / vertex pool
       (64-byte lines, 2-way 16 KB D-cache). Only if the prefetch result
       shows the misses are the cost.
-- [ ] Media Engine: run the libxmp music player there and retire the
-      pre-rendered WAVs (interactive music back, 127 MB off the card).
-      Load the module on the main CPU, render on the ME (`xmp_play_buffer`,
-      integer/FPU only, no syscalls) into an uncached 64-byte-aligned ring
-      the existing hardware-channel streamer reads; section/volume/stop as
-      a polled command word. Kernel stub via mcidclan's ME custom core
-      (works on PRO-C). Blind to debug: heartbeat counters in shared memory.
-      Later: the mesh pass, once its CPU share is understood.
+- [x] Media Engine music (2026-09-24): libxmp renders the module on the ME
+      (mcidclan's me-core bridge; `[PSP] MusicME`, `MusicMERate`,
+      `MusicMEStereo`), 44.1 kHz stereo straight into the hardware channel,
+      interactive sections via a command word. The ME sits mostly idle, the
+      frame rate is unchanged. The WAV renders are now only a fallback
+      (installer: `PSP_WAV_MUSIC=1`); the Music/*.wav on the card can go.
+      Still to check by ear in a level: section changes, fades.
+- [ ] Media Engine, next candidates now that the bridge works: OpenAL's
+      software mixer (audioOutput thread, priority 22 on the main CPU), or
+      the mesh pass once its CPU share is understood.
 - [ ] Botmatch "out of memory": unload engine texture mips and sound
       samples after upload (~7 MB), consider TextureBudgetMB=4.
-- [ ] Interactive music: per-section WAV renders (the streamer plays one
-      file per song; UE1 switches sections with xmp_set_position).
 
 ## Rejected on hardware numbers (do not retry)
 
