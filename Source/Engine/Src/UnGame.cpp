@@ -469,7 +469,34 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 	debugf( NAME_Log, "LoadMap: %s", *Str );
 #ifdef __PSP__
 	const DOUBLE PspLoadStart = appSeconds();
-	struct FPspLoadTimer { DOUBLE T0; const char* Map; ~FPspLoadTimer() { debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s", Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState() ); } } PspLoadTimer = { PspLoadStart, *Str };
+	// [PSP] MemDump=1 lists every object class with its memory after the
+	// load, while memory is still available to print with.
+	struct FPspLoadTimer { DOUBLE T0; const char* Map; ~FPspLoadTimer()
+	{
+		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s", Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState() );
+		INT Dump = 0; GetConfigInt( "PSP", "MemDump", Dump );
+		if( Dump )
+		{
+			GObj.Exec( "OBJ LIST", GSystem );
+			// OBJ LIST reports serialised sizes; this is what the instances
+			// themselves occupy (PropertiesSize per object), by class.
+			struct FClassBytes { UClass* Class; INT Bytes; INT Count; };
+			TArray<FClassBytes> Tally;
+			INT Total = 0, Objects = 0;
+			for( FObjectIterator It; It; ++It )
+			{
+				UClass* C = It->GetClass(); const INT B = C ? C->PropertiesSize : 0;
+				Total += B; ++Objects;
+				INT k; for( k=0; k<Tally.Num(); k++ ) if( Tally(k).Class == C ) break;
+				if( k == Tally.Num() ) { FClassBytes N; N.Class = C; N.Bytes = 0; N.Count = 0; Tally.AddItem( N ); }
+				Tally(k).Bytes += B; Tally(k).Count++;
+			}
+			for( INT i=0; i<Tally.Num(); i++ ) for( INT j=i+1; j<Tally.Num(); j++ ) if( Tally(j).Bytes > Tally(i).Bytes ) Exchange( Tally(i), Tally(j) );
+			debugf( NAME_Log, "PSPMEM: %i objects, %i KB of instance memory (PropertiesSize)", Objects, Total / 1024 );
+			for( INT i=0; i<Min(Tally.Num(),20); i++ )
+				debugf( NAME_Log, "PSPMEM:   %-28s %6i objects %6i KB", Tally(i).Class ? Tally(i).Class->GetName() : "?", Tally(i).Count, Tally(i).Bytes / 1024 );
+		}
+	} } PspLoadTimer = { PspLoadStart, *Str };
 #endif
 
 	// Remember current level's stack level.

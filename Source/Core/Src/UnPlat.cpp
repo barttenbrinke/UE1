@@ -372,6 +372,11 @@ void appOpenLog( const char* Fname )
 	FGlobalPlatform init/exit.
 -----------------------------------------------------------------------------*/
 
+// Command line storage (filled by appSetCmdLine below; the PSP build may
+// append [PSP] CmdLine= from the ini in appInit).
+static char* CmdLine=NULL;
+static char CmdLineBuf[4096] = "";
+
 void appInit()
 {
 	// Init.
@@ -415,6 +420,22 @@ void appInit()
 
 	// Init config cache.
 	GConfigCache.Init( Ini );
+
+#ifdef __PSP__
+	// [PSP] CmdLine= is appended to the command line: PPSSPP cannot pass
+	// arguments to an EBOOT, and the switches (-NOSOUND, -VSYNC=0, ...) are
+	// how experiments are driven on the hardware.
+	{
+		char Extra[512] = "";
+		if( GetConfigString( "PSP", "CmdLine", Extra, ARRAY_COUNT(Extra) ) && Extra[0] )
+		{
+			CmdLine = CmdLineBuf;
+			if( CmdLineBuf[0] ) appStrncat( CmdLineBuf, " ", sizeof(CmdLineBuf) - 1 );
+			appStrncat( CmdLineBuf, Extra, sizeof(CmdLineBuf) - 1 );
+			debugf( NAME_Init, "PSP: command line from ini: %s", Extra );
+		}
+	}
+#endif
 
 	// Language.
 	if( GetConfigString( "Engine.Engine", "Language", Temp, ARRAY_COUNT(Temp) ) )
@@ -1639,8 +1660,7 @@ CORE_API FGuid appCreateGuid()
 	Command line.
 -----------------------------------------------------------------------------*/
 
-static char* CmdLine=NULL;
-static char CmdLineBuf[4096] = "";
+
 
 // Set command line from argc/argv.
 CORE_API void appSetCmdLine( INT Argc, const char** Argv )
