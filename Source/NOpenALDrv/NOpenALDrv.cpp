@@ -853,7 +853,10 @@ void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 		static INT FreeData = -1;
 		if( FreeData < 0 ) { FreeData = 1; GetConfigInt( "PSP", "FreeSoundData", FreeData ); }
 		if( FreeData )
+		{
 			Sound->Data.Empty();
+			Sound->Data.Shrink();   // Empty() keeps the allocation; Shrink() releases it
+		}
 	}
 #endif
 

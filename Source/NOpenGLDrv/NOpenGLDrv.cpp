@@ -2467,6 +2467,7 @@ static void PspFreeTextureData( FTextureInfo& Info, INT UploadedMips )
 	{
 		GPspTexFreedBytes += Tex->Mips(i).DataArray.Num();
 		Tex->Mips(i).DataArray.Empty();
+		Tex->Mips(i).DataArray.Shrink();   // Empty() keeps the allocation; Shrink() releases it
 		Tex->Mips(i).DataPtr = NULL;
 	}
 	for( INT i=0; i<Info.NumMips; i++ )

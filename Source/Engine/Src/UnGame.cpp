@@ -469,7 +469,7 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 	debugf( NAME_Log, "LoadMap: %s", *Str );
 #ifdef __PSP__
 	const DOUBLE PspLoadStart = appSeconds();
-	struct FPspLoadTimer { DOUBLE T0; const char* Map; ~FPspLoadTimer() { debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s", Map, (FLOAT)( appSeconds() - T0 ) ); } } PspLoadTimer = { PspLoadStart, *Str };
+	struct FPspLoadTimer { DOUBLE T0; const char* Map; ~FPspLoadTimer() { debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s", Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState() ); } } PspLoadTimer = { PspLoadStart, *Str };
 #endif
 
 	// Remember current level's stack level.

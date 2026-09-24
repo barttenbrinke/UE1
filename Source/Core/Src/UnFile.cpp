@@ -230,7 +230,40 @@ CORE_API void appDumpAllocs( FOutputDevice* Out )
 #include <pspsysmem.h>
 // Heap picture for the out-of-memory message: newlib arena in use / free,
 // what the kernel still has outside the arena, and its largest block.
-static const char* PspHeapState()
+// What the heap holds when an allocation fails: the object list by class.
+// Runs once; it may itself need a little memory, and we are dying anyway.
+// Opt-in (-MEMDUMP on the command line): with the heap nearly gone the
+// listing itself has hung the emulator.
+static void PspDumpObjectsOnce()
+{
+	static UBOOL Done = 0;
+	if( Done || !GObj.GetInitialized() || !ParseParam( appCmdLine(), "MEMDUMP" ) ) return;
+	Done = 1;
+	GObj.Exec( "OBJ LIST", GSystem );
+}
+// Called for large allocations: dump the object list once when the heap is
+// nearly exhausted, while there is still memory to print with.
+static void PspLowMemoryCheck( INT Size )
+{
+	if( Size < 65536 ) return;
+	struct mallinfo M = mallinfo();
+	// The arena grows on demand inside the module's heap block, so "free
+	// inside the arena" only means something once the arena is large.
+	if( M.arena > 32 * 1024 * 1024 && M.fordblks < 1024 * 1024 )
+	{
+		static UBOOL Warned = 0;
+		if( !Warned )
+		{
+			Warned = 1;
+			debugf( NAME_Log, "PSPMEM: low memory at a %i byte request: heap used %iKB free %iKB (arena %iKB), kernel free %iKB",
+				Size, M.uordblks / 1024, M.fordblks / 1024, M.arena / 1024, sceKernelTotalFreeMemSize() / 1024 );
+			PspDumpObjectsOnce();
+		}
+	}
+}
+CORE_API const char* appPspHeapState();
+static const char* PspHeapState() { return appPspHeapState(); }
+CORE_API const char* appPspHeapState()
 {
 	static char Buf[160];
 	struct mallinfo M = mallinfo();
@@ -245,13 +278,19 @@ CORE_API void* appMalloc( INT Size, const char* Tag )
 	guard(appMalloc);
 	check(Size>0);
 
+#ifdef __PSP__
+	PspLowMemoryCheck( Size );
+#endif
 	void* Ptr = malloc( Size );
 	check(Ptr);
 #ifdef __PSP__
 	// check() is compiled out in release; a silent NULL here surfaced as a
 	// null-pointer crash deep inside level loading. Fail loudly instead.
 	if( !Ptr )
-		appErrorf( "Out of memory: %i bytes (%s); %s", Size, Tag ? Tag : "?", PspHeapState() );
+		{
+			PspDumpObjectsOnce();
+			appErrorf( "Out of memory: %i bytes (%s); %s", Size, Tag ? Tag : "?", PspHeapState() );
+		}
 #endif
 
 #if CHECK_ALLOCS
@@ -321,9 +360,13 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 #endif
 #ifdef __PSP__
 	{
+		PspLowMemoryCheck( NewSize );
 		void* Result = realloc( Ptr, NewSize );
 		if( !Result && NewSize > 0 )
+		{
+			PspDumpObjectsOnce();
 			appErrorf( "Out of memory: realloc %i bytes (%s); %s", NewSize, Tag ? Tag : "?", PspHeapState() );
+		}
 		return Result;
 	}
 #else

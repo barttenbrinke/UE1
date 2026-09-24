@@ -3514,13 +3514,16 @@ IMPLEMENT_CLASS(ULanguage);
 	Reloading an object's data from its package.
 -----------------------------------------------------------------------------*/
 
+CORE_API INT GPspReloading = 0;
 CORE_API UBOOL appReloadObject( UObject* Object )
 {
 	guard(appReloadObject);
 	if( !Object || !Object->GetLinker() )
 		return 0;
 	Object->SetFlags( RF_NeedLoad );
+	++GPspReloading;
 	Object->GetLinker()->Preload( Object );
+	--GPspReloading;
 	return !( Object->GetFlags() & RF_NeedLoad );
 	unguard;
 }

@@ -393,6 +393,11 @@ CORE_API UBOOL ParseParam( const char* Stream, const char* Param );
 // Microseconds the main thread spent inside the display swap (NSDLViewport);
 // the GL driver reports and resets it with its other PSPPERF counters.
 CORE_API extern INT GPspSwapWaitUs;
+// "heap used AKB free BKB (arena CKB), kernel free DKB largest EKB" for logs.
+CORE_API const char* appPspHeapState();
+// Non-zero while appReloadObject() re-serialises an object: loaders that
+// drop data on load (texture mips) must keep it then.
+CORE_API extern INT GPspReloading;
 // The Allegrex FPU is single precision only; DOUBLE is a libgcc software call.
 // With the DOUBLE interface every appSqrt() in the engine cost a float->double
 // conversion, the call, and a double->float conversion, and idioms such as

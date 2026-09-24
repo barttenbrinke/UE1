@@ -306,6 +306,28 @@ void UTexture::Serialize( FArchive& Ar )
 	if( (Ar.IsSaving() || Ar.IsLoading()) && (TextureFlags & TF_Parametric) )
 		for( INT i=0; i<Mips.Num(); i++ )
 			Mips(i).DataArray.AddZeroed( Mips(i).USize * Mips(i).VSize );
+#ifdef __PSP__
+	// Package textures do not keep their texels in RAM on the console. They
+	// are dropped here, as they load, because PostLoad only runs once the
+	// whole package batch is in and the peak is during the batch (a
+	// deathmatch map peaked at 45 MB against the PSP's ~38). The render
+	// device re-reads them through appReloadObject() when it first uploads
+	// the texture -- GPspReloading marks that pass so they survive it -- and
+	// frees them again afterwards. Realtime and parametric textures keep
+	// their data.
+	//   [PSP] FreeTextureData=1
+	if( Ar.IsLoading() && !GPspReloading && GetLinker() && !( TextureFlags & ( TF_Realtime | TF_Parametric ) ) )
+	{
+		static INT FreeData = -1;
+		if( FreeData < 0 ) { FreeData = 1; GetConfigInt( "PSP", "FreeTextureData", FreeData ); }
+		if( FreeData )
+			for( INT i=0; i<Mips.Num(); i++ )
+			{
+				Mips(i).DataArray.Empty();   // Remove() with Num 0 releases the allocation
+				Mips(i).DataPtr = NULL;
+			}
+	}
+#endif
 	if( Ar.Ver() <= 38 )//oldver
 	{
 		UClamp = USize;
@@ -419,6 +441,7 @@ void UTexture::PostLoad()
 	// Init animation.
 	Accumulator = 0;
 	LastUpdateTime = appSeconds();
+
 
 	unguardobj;
 }
