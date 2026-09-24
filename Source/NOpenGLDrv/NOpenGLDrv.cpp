@@ -148,35 +148,140 @@ static BYTE* GPspVtxRing    = NULL;
 static INT   GPspVtxRingPos = 0;
 static FLOAT* GPspVtx     = NULL;   // current slice; valid until the next claim
 
-// Claim Bytes of ring space for a draw that is about to be issued.
-static void* PspClaimVtx( INT Bytes )
-{
-	Bytes = ( Bytes + 63 ) & ~63;           // keep every slice 64-byte aligned
-	if( Bytes > PSP_VTX_RING_BYTES )
-		return NULL;                        // absurdly large poly; skip it
+// The ring lives in a pspgl vertex buffer object that stays bound and mapped
+// for the life of the process.
+//
+// Why: pspgl's glDrawArrays on a client array is malloc + vertex copy + a
+// D-cache writeback syscall + free, every draw (the hardware profile put
+// PspFlushBatch/PspSetArrays "self" -- which is that copy -- at ~7% of the
+// frame). Arrays that live in a buffer object in the GE's native layout are
+// used in place (__pspgl_cache_arrays takes the VBO's memory directly), so
+// the copy disappears. Mapping write-only hands back an uncached alias, so
+// there is nothing to flush either, and pspgl never migrates or evicts a
+// mapped buffer, so the pointer stays valid.
+//
+// Ring discipline is unchanged: slices are handed out in order, the ring is
+// reset once per frame after the swap has drained the GE, and wrapping inside
+// a frame waits for the GE first.
+//
+// pspgl refuses gl*Pointer while the bound buffer is mapped (the array is
+// then left without a buffer and the next draw copies from address 0 -- a
+// bus error on hardware). So every draw uses ONE vertex layout, T2F_C4UB_V3F
+// (24 bytes), the three pointers are set once before the map and never
+// again, and a draw is glDrawArrays(mode, firstVertex, count) with the slice
+// offset as the first vertex. pspgl caches the VBO as its locked array on
+// the first draw and keeps using it; no per-draw copy, malloc or flush.
+//   [PSP] VertexVBO=1   ; 0 = old path (static ring, pspgl copies per draw)
+enum { PSP_VTX_STRIDE = 24, PSP_RING_ALIGN = 192 };   // 192 = lcm(24, 64)
+static GLuint GPspVbo      = 0;
+static BYTE*  GPspVboBase  = NULL;
+static INT    GPspVboState = 0;     // 0 untried, 1 mapped, -1 unavailable
+static INT    GPspDrawFirst = 0;    // first vertex of the slice about to be drawn
+static INT    GPspRingWraps = 0;    // mid-frame glFinish wraps per report interval
 
-	if( !GPspVtxRing )
+static void PspRingInit()
+{
+	if( GPspVtxRing )
+		return;
+	INT UseVbo = 1;
+	GetConfigInt( "PSP", "VertexVBO", UseVbo );
+	if( UseVbo && GPspVboState == 0 )
+	{
+		GPspVboState = -1;
+		while( glGetError() != GL_NO_ERROR ) {}
+		glGenBuffersARB( 1, &GPspVbo );
+		glBindBufferARB( GL_ARRAY_BUFFER_ARB, GPspVbo );
+		glBufferDataARB( GL_ARRAY_BUFFER_ARB, PSP_VTX_RING_BYTES, NULL, GL_STREAM_DRAW_ARB );
+		if( glGetError() == GL_NO_ERROR )
+		{
+			// The one and only array setup, while the buffer is still unmapped.
+			glDisableClientState( GL_NORMAL_ARRAY );
+			glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+			glEnableClientState( GL_COLOR_ARRAY );
+			glEnableClientState( GL_VERTEX_ARRAY );
+			glTexCoordPointer( 2, GL_FLOAT,         PSP_VTX_STRIDE, (const void*)0  );
+			glColorPointer   ( 4, GL_UNSIGNED_BYTE, PSP_VTX_STRIDE, (const void*)8  );
+			glVertexPointer  ( 3, GL_FLOAT,         PSP_VTX_STRIDE, (const void*)12 );
+			if( glGetError() == GL_NO_ERROR )
+				GPspVboBase = (BYTE*)glMapBufferARB( GL_ARRAY_BUFFER_ARB, GL_WRITE_ONLY_ARB );
+		}
+		if( GPspVboBase )
+		{
+			GPspVboState = 1;
+			debugf( NAME_Log, "PSPPERF: vertex ring in VBO %u at %p (%dKB, uncached map); %s",
+				(unsigned)GPspVbo, GPspVboBase, PSP_VTX_RING_BYTES / 1024, PspHeapStr() );
+		}
+		else
+		{
+			glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+			debugf( NAME_Log, "PSPPERF: vertex VBO unavailable, using the static ring" );
+		}
+	}
+	if( GPspVboState == 1 )
+		GPspVtxRing = GPspVboBase;
+	else
 	{
 		// Static, not memalign: by the time the renderer starts, the heap top is
 		// past 0x0A000000 (the PSP-2000's extra 32MB), and the GE cannot fetch
 		// vertices from there. Module data sits at 0x08Exxxxx, which it can.
 		static BYTE GPspVtxRingStore[PSP_VTX_RING_BYTES] __attribute__((aligned(64)));
 		GPspVtxRing = GPspVtxRingStore;
-		if( !GPspVtxRing )
-			return NULL;
-		GPspVtxRingPos = 0;
 	}
+	GPspVtxRingPos = 0;
+}
 
+// Bytes of ring space; the start is aligned so it is both cache-line aligned
+// and a whole number of vertices in. Waits for the GE if the ring has to
+// wrap mid-frame.
+static inline INT PspRingRound( INT Bytes ) { return ( ( Bytes + PSP_RING_ALIGN - 1 ) / PSP_RING_ALIGN ) * PSP_RING_ALIGN; }
+static void* PspRingAlloc( INT Bytes )
+{
+	Bytes = PspRingRound( Bytes );
+	if( Bytes > PSP_VTX_RING_BYTES )
+		return NULL;                        // absurdly large; skip it
+	PspRingInit();
+	GPspVtxRingPos = PspRingRound( GPspVtxRingPos );
 	if( GPspVtxRingPos + Bytes > PSP_VTX_RING_BYTES )
 	{
 		// Wrapping would overwrite data the GE may still be reading.
 		glFinish();
+		++GPspRingWraps;
 		GPspVtxRingPos = 0;
 	}
-
 	void* Slice = GPspVtxRing + GPspVtxRingPos;
 	GPspVtxRingPos += Bytes;
 	return Slice;
+}
+
+// Once per frame, from Lock(): the swap has already waited for every list,
+// so glFinish here is a formality and the whole ring is free again.
+static void PspRingFrameReset()
+{
+	if( GPspVtxRing )
+	{
+		glFinish();
+		GPspVtxRingPos = 0;
+	}
+}
+
+// Claim Bytes of ring space for a draw that is about to be issued. An open
+// triangle batch is drawn first so its vertices stay contiguous in the ring.
+static void* PspClaimVtx( INT Bytes );
+
+// The draw itself: from the VBO by first-vertex offset (set by PspSetArrays),
+// or the old client-array path.
+static INT GPspDrawCalls = 0, GPspDrawVerts = 0;   // per report interval
+static inline void PspDrawArrays( GLenum Mode, INT Count )
+{
+	const INT First = ( GPspVboState == 1 ) ? GPspDrawFirst : 0;
+	glDrawArrays( Mode, First, Count );
+	++GPspDrawCalls; GPspDrawVerts += Count;
+	static INT Logged = 0;
+	if( Logged < 6 )
+	{
+		++Logged;
+		debugf( NAME_Log, "PSPVBO: draw mode %d first %d count %d err 0x%x ring pos %d", (int)Mode, First, Count, (unsigned)glGetError(), GPspVtxRingPos );
+	}
 }
 #endif
 
@@ -512,6 +617,7 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 {
 #ifdef __PSP__
 	PspFlushBatch();
+	PspRingFrameReset();
 #endif
 	guard(UNOpenGLRenderDevice::Lock);
 
@@ -554,8 +660,8 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				debugf( NAME_Log, "PSPPERF:   memory stick: %i window refills, %i KB read", GPspFileRefills - LastRefills, ( GPspFileRefillBytes - LastBytes ) / 1024 );
 				LastRefills = GPspFileRefills; LastBytes = GPspFileRefillBytes;
 			}
-			debugf( NAME_Log, "PSPPERF:   draws: %i mesh polys in %i batches, %i facet passes", GPspBatchPolys, GPspBatchDraws, GPspFacetDraws );
-			GPspBatchPolys = GPspBatchDraws = GPspFacetDraws = 0;
+			debugf( NAME_Log, "PSPPERF:   draws: %i mesh polys in %i batches, %i facet passes, %i ring wraps; %i array draws, %i verts", GPspBatchPolys, GPspBatchDraws, GPspFacetDraws, GPspRingWraps, GPspDrawCalls, GPspDrawVerts );
+			GPspBatchPolys = GPspBatchDraws = GPspFacetDraws = GPspRingWraps = GPspDrawCalls = GPspDrawVerts = 0;
 			{
 				// Once per run, when the heap gets tight: UE1's own per-class
 				// memory table, so an out-of-memory has a suspect list next to it.
@@ -825,7 +931,7 @@ static UBOOL PspEnsureVtxBuffers( INT Pts )
 //
 static inline void PspDrawFan( INT N )
 {
-	glDrawArrays( N == 3 ? GL_TRIANGLES : GL_TRIANGLE_FAN, 0, N );
+	PspDrawArrays( N == 3 ? GL_TRIANGLES : GL_TRIANGLE_FAN, N );
 }
 
 
@@ -833,6 +939,22 @@ static UBOOL PspSetArrays( UBOOL bTex, UBOOL bColor, const void* Base, INT Strid
 {
 	const BYTE* P = (const BYTE*)Base;
 	INT Off = 0;
+	if( GPspVboState == 1 )
+	{
+		// Arrays were set once at init (see PspRingInit); every draw is
+		// T2F_C4UB_V3F from the ring, addressed by first vertex.
+		if( !Base || Stride != PSP_VTX_STRIDE )
+			return 0;
+		// Re-assert the enables every draw: cheap (flag writes; pspgl only
+		// drops its cached array if the set actually changes), and a draw
+		// issued with no vertex array enabled is silently discarded.
+		glDisableClientState( GL_NORMAL_ARRAY );
+		glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+		glEnableClientState( GL_COLOR_ARRAY );
+		glEnableClientState( GL_VERTEX_ARRAY );
+		GPspDrawFirst = (INT)( (const BYTE*)Base - GPspVboBase ) / PSP_VTX_STRIDE;
+		return 1;
+	}
 
 	// pspgl's __pspgl_cache_arrays walks every *enabled* array and flushes its
 	// cache range, so one stale array with a null pointer takes the process
@@ -876,7 +998,7 @@ static UBOOL PspSetArrays( UBOOL bTex, UBOOL bColor, const void* Base, INT Strid
 // facet pass is one triangle list instead of one fan per poly. pspgl copies
 // the vertices at draw time, so these buffers need not outlive the call.
 enum { PSP_BATCH_MAX_VERTS = 3072, PSP_POLY_MAX = 128 };
-static BYTE  GPspBatchBuf[PSP_BATCH_MAX_VERTS * 24] __attribute__((aligned(64)));
+static BYTE* GPspBatchBuf   = NULL;   // start of the open batch inside the ring
 static INT   GPspBatchVerts = 0;
 static UBOOL GPspBatchOpen  = 0;
 static QWORD GPspBatchTex   = 0;
@@ -887,25 +1009,47 @@ static void PspFlushBatch()
 {
 	if( GPspBatchVerts > 0 && PspSetArrays( 1, 1, GPspBatchBuf, 24 ) )
 	{
-		glDrawArrays( GL_TRIANGLES, 0, GPspBatchVerts );
+		PspDrawArrays( GL_TRIANGLES, GPspBatchVerts );
 		++GPspBatchDraws;
 	}
 	GPspBatchVerts = 0;
 	GPspBatchOpen  = 0;
 }
 
+static void* PspClaimVtx( INT Bytes )
+{
+	if( GPspBatchVerts > 0 )
+		PspFlushBatch();
+	return PspRingAlloc( Bytes );
+}
+
 // Room for N vertices in the batch, flushing first if it is full (the GL
-// state is the batch's, so it stays open). NULL only if N cannot ever fit.
+// state is the batch's, so it stays open). The batch grows in place at the
+// ring's tail -- nothing else claims ring space while it is open (PspClaimVtx
+// flushes it first) -- so a flush is also forced when the ring would wrap.
+// NULL only if N cannot ever fit.
 static inline BYTE* PspBatchReserve( INT N )
 {
 	if( N > PSP_BATCH_MAX_VERTS )
 		return NULL;
-	if( GPspBatchVerts + N > PSP_BATCH_MAX_VERTS )
+	const INT Bytes = N * 24;
+	if( GPspBatchVerts + N > PSP_BATCH_MAX_VERTS
+	||	( GPspBatchVerts > 0 && GPspVtxRingPos + Bytes > PSP_VTX_RING_BYTES ) )
 	{
 		PspFlushBatch();
 		GPspBatchOpen = 1;
 	}
-	BYTE* P = GPspBatchBuf + GPspBatchVerts * 24;
+	if( GPspBatchVerts == 0 )
+	{
+		GPspBatchBuf = (BYTE*)PspRingAlloc( Bytes );   // wraps (with a GE wait) if it must
+		if( !GPspBatchBuf )
+			return NULL;
+		GPspVtxRingPos -= PspRingRound( Bytes ) - Bytes;   // grow in 24-byte steps from here
+		GPspBatchVerts = N;
+		return GPspBatchBuf;
+	}
+	BYTE* P = GPspVtxRing + GPspVtxRingPos;
+	GPspVtxRingPos += Bytes;
 	GPspBatchVerts += N;
 	return P;
 }
@@ -933,10 +1077,10 @@ static void PspEmitFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 			Tris += Poly->NumPts - 2;
 	if( !Tris )
 		return;
-	BYTE* Buf = (BYTE*)PspClaimVtx( Tris * 3 * 20 );
+	BYTE* Buf = (BYTE*)PspClaimVtx( Tris * 3 * 24 );
 	if( !Buf )
 		return;
-	static BYTE Fan[PSP_POLY_MAX * 20];
+	static BYTE Fan[PSP_POLY_MAX * 24];
 	BYTE* Out  = Buf;
 	INT   Base = 0;
 	for( FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next )
@@ -947,23 +1091,25 @@ static void PspEmitFacet( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 			Base += N;
 			continue;
 		}
-		FLOAT* F = (FLOAT*)Fan;
+		BYTE* V = Fan;
 		for( INT i = 0; i < N; ++i )
 		{
 			const FLOAT* Raw = &GPspRawUV[ ( Base + i ) * 2 ];
-			*F++ = ( Raw[0] - UDot - UPan ) * UMult;
-			*F++ = ( Raw[1] - VDot - VPan ) * VMult;
+			FLOAT* T = (FLOAT*)V;
+			T[0] = ( Raw[0] - UDot - UPan ) * UMult;
+			T[1] = ( Raw[1] - VDot - VPan ) * VMult;
+			*(DWORD*)( V + 8 ) = 0xffffffff;   // white: modulate leaves the texture
+			FLOAT* P3 = (FLOAT*)( V + 12 );
 			const FVector& P = Poly->Pts[i]->Point;
-			*F++ = P.X;
-			*F++ = P.Y;
-			*F++ = P.Z;
+			P3[0] = P.X; P3[1] = P.Y; P3[2] = P.Z;
+			V += 24;
 		}
-		Out = PspFanToTris( Out, Fan, N, 20 );
+		Out = PspFanToTris( Out, Fan, N, 24 );
 		Base += N;
 	}
-	if( PspSetArrays( 1, 0, Buf, 20 ) )
+	if( PspSetArrays( 1, 1, Buf, 24 ) )
 	{
-		glDrawArrays( GL_TRIANGLES, 0, Tris * 3 );
+		PspDrawArrays( GL_TRIANGLES, Tris * 3 );
 		++GPspFacetDraws;
 	}
 }
@@ -1029,11 +1175,23 @@ static void PspInitGamma()
 static BYTE GPspLightLUT[128];
 static INT  GPspLightLUTScale = -1;
 
+// LightScale is linear, so lifting dark corners with it also saturates the
+// already-bright surfaces. LightGamma bends the curve instead: a power law on
+// the scaled value, so darks and midtones rise while the top end stays put.
+//   [PSP] LightGamma=100   ; percent; 100 = linear (off), higher = brighter darks
 static void PspBuildLightLUT( INT ScalePercent )
 {
+	INT LightGamma = 100;
+	GetConfigInt( "PSP", "LightGamma", LightGamma );
+	LightGamma = Clamp( LightGamma, 50, 400 );
+	const FLOAT Exponent = 100.f / (FLOAT)LightGamma;
 	for( INT i = 0; i < 128; ++i )
-		GPspLightLUT[i] = (BYTE)Clamp( ( i * 4 * ScalePercent ) / 100, 0, 255 );
+	{
+		const FLOAT Lin = Clamp( (FLOAT)( i * 4 * ScalePercent ) / 100.f, 0.f, 255.f ) / 255.f;
+		GPspLightLUT[i] = (BYTE)Clamp( appRound( 255.f * appPow( Lin, Exponent ) ), 0, 255 );
+	}
 	GPspLightLUTScale = ScalePercent;
+	debugf( NAME_Log, "PSPPERF: light LUT scale %d%% gamma %d%%", ScalePercent, LightGamma );
 }
 
 static void PspEmitFacetLit( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
@@ -1099,7 +1257,7 @@ static void PspEmitFacetLit( FSurfaceFacet& Facet, FLOAT UDot, FLOAT VDot,
 	}
 	if( PspSetArrays( 1, 1, Buf, 24 ) )
 	{
-		glDrawArrays( GL_TRIANGLES, 0, Tris * 3 );
+		PspDrawArrays( GL_TRIANGLES, Tris * 3 );
 		++GPspFacetDraws;
 	}
 }
@@ -1473,11 +1631,6 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 				GPspBatchFrame = Frame;
 			}
 			const INT Need = 3 * ( NumPts - 2 );
-			if( GPspBatchVerts + Need > PSP_BATCH_MAX_VERTS )
-			{
-				PspFlushBatch();
-				GPspBatchOpen = 1;   // GL state is still the batch's
-			}
 			static BYTE Fan[PSP_POLY_MAX * 24];
 			BYTE* V = Fan;
 			for( INT i = 0; i < NumPts; ++i )
@@ -1500,8 +1653,9 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 				P3[0] = P->Point.X; P3[1] = P->Point.Y; P3[2] = P->Point.Z;
 				V += 24;
 			}
-			PspFanToTris( GPspBatchBuf + GPspBatchVerts * 24, Fan, NumPts, 24 );
-			GPspBatchVerts += Need;
+			BYTE* Out = PspBatchReserve( Need );   // ring-backed; may flush + wrap
+			if( Out )
+				PspFanToTris( Out, Fan, NumPts, 24 );
 			++GPspBatchPolys;
 			uunclock(GouraudCycles);
 			return;
@@ -1575,21 +1729,23 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 #ifdef __PSP__
 			if( PspEnsureMeshBuffer( NumPts ) )
 			{
-				BYTE* Out = GPspMeshBuf;   // C4UB_V3F: stride 16
+				BYTE* Out = GPspMeshBuf;   // T2F_C4UB_V3F, texcoords unused (texture off)
 				for( INT i = 0; i < NumPts; i++ )
 				{
 					FTransTexture* P = Pts[i];
-					Out[0] = PspToByte( P->Fog.X );
-					Out[1] = PspToByte( P->Fog.Y );
-					Out[2] = PspToByte( P->Fog.Z );
-					Out[3] = PspToByte( P->Fog.W );
-					FLOAT* V = (FLOAT*)( Out + 4 );
+					FLOAT* T = (FLOAT*)Out;
+					T[0] = 0.f; T[1] = 0.f;
+					Out[8]  = PspToByte( P->Fog.X );
+					Out[9]  = PspToByte( P->Fog.Y );
+					Out[10] = PspToByte( P->Fog.Z );
+					Out[11] = PspToByte( P->Fog.W );
+					FLOAT* V = (FLOAT*)( Out + 12 );
 					V[0] = P->Point.X;
 					V[1] = P->Point.Y;
 					V[2] = P->Point.Z;
-					Out += 16;
+					Out += 24;
 				}
-				if( PspSetArrays( 0, 1, GPspMeshBuf, 16 ) )
+				if( PspSetArrays( 1, 1, GPspMeshBuf, 24 ) )
 					PspDrawFan( NumPts );
 			}
 			else

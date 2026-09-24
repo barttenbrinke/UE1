@@ -58,6 +58,17 @@ extern "C" void glColorTableEXT( GLenum target, GLenum internalFormat,
 // and never calls them -- but they still have to resolve at link time, so
 // glad_psp.cpp defines them as no-ops.
 
+// Buffer objects and compiled vertex arrays: implemented by pspgl (libGL.a
+// exports them) but declared in glext.h only behind GL_GLEXT_PROTOTYPES.
+// The vertex ring lives in a permanently mapped VBO; see NOpenGLDrv.cpp.
+extern "C" void    glGenBuffersARB( GLsizei n, GLuint* buffers );
+extern "C" void    glBindBufferARB( GLenum target, GLuint buffer );
+extern "C" void    glBufferDataARB( GLenum target, GLsizeiptrARB size, const GLvoid* data, GLenum usage );
+extern "C" GLvoid* glMapBufferARB( GLenum target, GLenum access );
+extern "C" GLboolean glUnmapBufferARB( GLenum target );
+extern "C" void    glLockArraysEXT( GLint first, GLsizei count );
+extern "C" void    glUnlockArraysEXT( void );
+
 #ifndef GL_MAX_TEXTURE_UNITS_ARB
 #define GL_MAX_TEXTURE_UNITS_ARB 0x84E2
 #endif
