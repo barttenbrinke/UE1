@@ -438,7 +438,11 @@ class ULinkerLoad : public ULinker, public FArchiveFileLoad
 	,	LoadFlags( InLoadFlags )
 	{
 		guard(ULinkerLoad::ULinkerLoad);
+#ifdef __PSP__
+		debugf( "Loading: %s; %s", InParent->GetFullName(), appPspHeapState() );   // per-package heap growth = its RAM cost
+#else
 		debugf( "Loading: %s", InParent->GetFullName() );
+#endif
 
 		// Error if linker already loaded.
 		for( INT i=0; i<GObj.Loaders.Num(); i++ )

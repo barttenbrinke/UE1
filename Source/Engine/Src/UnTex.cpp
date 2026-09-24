@@ -316,7 +316,7 @@ void UTexture::Serialize( FArchive& Ar )
 	// frees them again afterwards. Realtime and parametric textures keep
 	// their data.
 	//   [PSP] FreeTextureData=1
-	if( Ar.IsLoading() && !GPspReloading && GetLinker() && !( TextureFlags & ( TF_Realtime | TF_Parametric ) ) )
+	if( Ar.IsLoading() && !GPspReloading && GetLinker() && !( TextureFlags & ( TF_Realtime | TF_Parametric | TF_PspPinned ) ) )
 	{
 		static INT FreeData = -1;
 		if( FreeData < 0 ) { FreeData = 1; GetConfigInt( "PSP", "FreeTextureData", FreeData ); }
@@ -446,6 +446,26 @@ void UTexture::PostLoad()
 	unguardobj;
 }
 IMPLEMENT_CLASS(UTexture);
+
+#ifdef __PSP__
+ENGINE_API UBOOL PspEnsureTexels( UTexture* Texture )
+{
+	guard(PspEnsureTexels);
+	if( !Texture || !Texture->Mips.Num() )
+		return 0;
+	Texture->TextureFlags |= TF_PspPinned;
+	if( Texture->Mips(0).DataArray.Num() )
+		return 1;
+	if( !appReloadObject( Texture ) || !Texture->Mips.Num() || !Texture->Mips(0).DataArray.Num() )
+	{
+		debugf( NAME_Warning, "PspEnsureTexels: could not reload texels of %s", Texture->GetName() );
+		return 0;
+	}
+	Texture->TextureFlags |= TF_PspPinned;   // the reload re-serialised the flags
+	return 1;
+	unguard;
+}
+#endif
 
 /*---------------------------------------------------------------------------------------
 	UTexture mipmap generation.

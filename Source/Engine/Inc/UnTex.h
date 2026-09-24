@@ -157,6 +157,7 @@ enum ETextureFlags
 	// General info about the texture.
 	TF_Realtime         = 0x00000008,   // Texture data (not animation) changes in realtime.
 	TF_Parametric       = 0x00000010,   // Texture is parametric so data need not be saved.
+	TF_PspPinned        = 0x40000000,   // PSP: texels read on the CPU (procedural sources); never freed. Runtime only.
 	TF_RealtimeChanged  = 0x00000020,   // Realtime texture has changed since last lock.
 	TF_RealtimePalette  = 0x00000040,	// Realtime palette.
 };
@@ -401,3 +402,10 @@ class ENGINE_API UFont : public UTexture
 /*----------------------------------------------------------------------------
 	The End.
 ----------------------------------------------------------------------------*/
+#ifdef __PSP__
+// Make sure a package texture's texels are in memory (they are dropped at
+// load on the PSP) and keep them there: for code that reads them on the CPU.
+ENGINE_API UBOOL PspEnsureTexels( UTexture* Texture );
+#endif
+
+

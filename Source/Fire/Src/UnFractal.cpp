@@ -2588,6 +2588,9 @@ void UWetTexture::ApplyWetTexture()
 
 	// Any source texture selected yet ?
     if (SourceTexture == NULL) return;
+#ifdef __PSP__
+	if( !PspEnsureTexels( SourceTexture ) ) return;
+#endif
 
     BYTE* BitMapAddr     = &GetMip(0)->DataArray(0);     // pointer
 
@@ -2757,6 +2760,9 @@ void UIceTexture::BlitTexIce()
 
     // Warning: Source/GlassTexture must have same dimensions.
 
+#ifdef __PSP__
+	if( !PspEnsureTexels( SourceTexture ) || !PspEnsureTexels( GlassTexture ) ) return;
+#endif
     BYTE* TexAddr		= &SourceTexture->GetMip(0)->DataArray(0);
 	BYTE* GlassAddr		= &GlassTexture->GetMip(0)->DataArray(0);
     BYTE* BitMapAddr	= &GetMip(0)->DataArray(0);  // Pointer.
@@ -3176,6 +3182,9 @@ void UIceTexture::BlitIceTex()
 	guard(UIceTexture::BlitIceTex);
     // Warning: Source/GlassTexture must have same dimensions..
 
+#ifdef __PSP__
+	if( !PspEnsureTexels( SourceTexture ) || !PspEnsureTexels( GlassTexture ) ) return;
+#endif
     BYTE* TexAddr		= &SourceTexture->GetMip(0)->DataArray(0);
 	BYTE* GlassAddr		= &GlassTexture->GetMip(0)->DataArray(0);
     BYTE* BitMapAddr	= &GetMip(0)->DataArray(0);  // Pointer
@@ -4629,6 +4638,9 @@ void UWetTexture::PostLoad()
 	// the right size.
 
 	if (!SourceTexture) return;
+#ifdef __PSP__
+	if( !PspEnsureTexels( SourceTexture ) ) return;
+#endif
 
 	// Make sure this is the same size as our displacement-waves texture.
 	if ( ( SourceTexture->UBits  != UBits) || (SourceTexture->VBits  != VBits)  )
@@ -4773,6 +4785,9 @@ void UIceTexture::PostLoad()
 	UFractalTexture::PostLoad();
 
 	if (!SourceTexture) return;
+#ifdef __PSP__
+	if( !PspEnsureTexels( SourceTexture ) ) return;
+#endif
 
 	// Validate all sizes: minima & matching requirements.
 	if ((GlassTexture) && (SourceTexture)) 

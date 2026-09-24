@@ -2458,10 +2458,10 @@ static void PspFreeTextureData( FTextureInfo& Info, INT UploadedMips )
 	// on purpose below 8x8, so compare against a failure flag, not NumMips.
 	if( !GPspFreeTexData || UploadedMips < 1 || GPspUploadFailedNow )
 		return;
-	if( Info.TextureFlags & ( TF_Realtime | TF_Parametric | TF_RealtimeChanged ) )
+	if( Info.TextureFlags & ( TF_Realtime | TF_Parametric | TF_RealtimeChanged | TF_PspPinned ) )
 		return;
 	UTexture* Tex = PspTextureFromCacheID( Info.CacheID );
-	if( !Tex || !Tex->GetLinker() )
+	if( !Tex || !Tex->GetLinker() || ( Tex->TextureFlags & TF_PspPinned ) )
 		return;
 	for( INT i=0; i<Tex->Mips.Num(); i++ )
 	{
