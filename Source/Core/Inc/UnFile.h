@@ -390,6 +390,9 @@ CORE_API UBOOL ParseParam( const char* Stream, const char* Param );
 -----------------------------------------------------------------------------*/
 
 #ifdef __PSP__
+// Microseconds the main thread spent inside the display swap (NSDLViewport);
+// the GL driver reports and resets it with its other PSPPERF counters.
+CORE_API extern INT GPspSwapWaitUs;
 // The Allegrex FPU is single precision only; DOUBLE is a libgcc software call.
 // With the DOUBLE interface every appSqrt() in the engine cost a float->double
 // conversion, the call, and a double->float conversion, and idioms such as

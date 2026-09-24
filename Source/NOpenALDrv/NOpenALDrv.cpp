@@ -531,6 +531,14 @@ UBOOL UNOpenALAudioSubsystem::Init()
 	}
 	NumFreeMusicBuffers = NUM_MUSIC_BUFFERS;
 
+#ifdef __PSP__
+	{
+		INT Rev = UseReverb ? 1 : 0;
+		Parse( appCmdLine(), "REVERB=", Rev );   // hardware A/B: the EAX reverb runs inside the mixer thread
+		UseReverb = Rev != 0;
+		debugf( NAME_Log, "PSPPERF: reverb = %s", UseReverb ? "on" : "off" );
+	}
+#endif
 	if( UseReverb )
 	{
 #ifndef PSP_NO_EFX  // reverb effect + slot creation

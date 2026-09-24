@@ -268,11 +268,14 @@ static void* PspRingAlloc( INT Bytes )
 
 // Once per frame, from Lock(): the swap has already waited for every list,
 // so glFinish here is a formality and the whole ring is free again.
+static INT GPspFinishWaitUs = 0;   // main thread blocked in glFinish at Lock (GE still busy)
 static void PspRingFrameReset()
 {
 	if( GPspVtxRing )
 	{
+		const DWORD T0 = sceKernelGetSystemTimeLow();
 		glFinish();
+		GPspFinishWaitUs += (INT)( sceKernelGetSystemTimeLow() - T0 );
 		GPspVtxRingPos = 0;
 	}
 }
@@ -705,6 +708,8 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				LastRefills = GPspFileRefills; LastBytes = GPspFileRefillBytes;
 			}
 			debugf( NAME_Log, "PSPPERF:   draws: %i mesh polys in %i batches, %i facet passes, %i ring wraps; %i array draws, %i verts", GPspBatchPolys, GPspBatchDraws, GPspFacetDraws, GPspRingWraps, GPspDrawCalls, GPspDrawVerts );
+			debugf( NAME_Log, "PSPPERF:   main thread blocked: GE finish %i ms, swap/vsync %i ms", GPspFinishWaitUs / 1000, GPspSwapWaitUs / 1000 );
+			GPspFinishWaitUs = 0; GPspSwapWaitUs = 0;
 			GPspBatchPolys = GPspBatchDraws = GPspFacetDraws = GPspRingWraps = GPspDrawCalls = GPspDrawVerts = 0;
 			{
 				// Once per run, when the heap gets tight: UE1's own per-class
@@ -2734,6 +2739,9 @@ void UNOpenGLRenderDevice::UpdateSwapInterval()
 	{
 		SwapInterval = -1;
 	}
+#ifdef __PSP__
+	Parse( appCmdLine(), "VSYNC=", SwapInterval );   // hardware A/B without an ini edit
+#endif
 
 	if( SDL_GL_SetSwapInterval( SwapInterval ) < 0 )
 	{

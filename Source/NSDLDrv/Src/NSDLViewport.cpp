@@ -1,4 +1,7 @@
 #include <string.h>
+#ifdef __PSP__
+#include <pspthreadman.h>   // sceKernelGetSystemTimeLow for the swap wait counter
+#endif
 #include <ctype.h>
 
 #include "NSDLDrv.h"
@@ -542,7 +545,15 @@ void UNSDLViewport::Unlock( UBOOL Blit )
 		if( GLCtx )
 		{
 			// Flip OpenGL buffers.
+#ifdef __PSP__
+			{
+				const DWORD T0 = sceKernelGetSystemTimeLow();
+				SDL_GL_SwapWindow( hWnd );
+				GPspSwapWaitUs += (INT)( sceKernelGetSystemTimeLow() - T0 );
+			}
+#else
 			SDL_GL_SwapWindow( hWnd );
+#endif
 		}
 		else if( SDLRen && SDLTex )
 		{

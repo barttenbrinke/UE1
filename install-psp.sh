@@ -78,6 +78,8 @@ sed -i '' \
   -e 's|^SoundVolume=.*|SoundVolume=255|' \
   -e 's|^MusicVolume=.*|MusicVolume=180|' \
   -e 's|^MusicInterpolation=.*|MusicInterpolation=0|' \
+  -e 's|^SwapInterval=.*|SwapInterval=0|' \
+  -e 's|^UseReverb=.*|UseReverb=False|' \
   "$DEST/System/Default.ini" "$DEST/System/Unreal.ini"
 
 # PSP-specific tunables. Kept here rather than in Engine/Config so the upstream

@@ -323,6 +323,9 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 	Math functions.
 -----------------------------------------------------------------------------*/
 
+#ifdef __PSP__
+CORE_API INT GPspSwapWaitUs = 0;
+#endif
 #ifndef __PSP__ // single-precision inline versions live in UnFile.h
 CORE_API DOUBLE appExp( DOUBLE Value )
 {

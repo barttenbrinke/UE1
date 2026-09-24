@@ -13,8 +13,19 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 
 - [ ] Music volume/effects balance after the louder defaults
       (SoundVolume 255, MusicVolume 180).
-- [ ] Read the per-thread CPU shares (now in the PSPPERF report) on the
-      PSP: decides whether OpenAL's mixer goes to the Media Engine.
+- [x] Per-thread CPU shares read on the PSP (2026-09-24): main 55-65%,
+      OpenAL mixer 9-20%, rest ~3%. Main was blocked ~9 ms/frame in the
+      vblank wait (SwapInterval=1) and 0.2 ms in the GE finish: the GE is
+      not a bottleneck. The EAX reverb was most of the mixer (9% -> 2%
+      without it). Both are now off by default in the card ini
+      (`SwapInterval=0`, `UseReverb=False`), each worth ~6% mean fps;
+      revert either in Unreal.ini if tearing or dry rooms bother you.
+- [ ] Remaining main-thread idle (~14% with vsync off): find it. Candidates:
+      Memory Stick reads on the main thread (lazy asset loads, texture
+      package reloads), pspgl waiting for a free display list, the input
+      thread. Add timers around sceIoRead/appFread and pspgl's submit.
+- [ ] OpenAL mixer on the Media Engine: no longer worth it (2% without
+      reverb). Reverb on the ME would be, if the reverb is wanted back.
 
 ## Bigger, in order of expected payoff
 
