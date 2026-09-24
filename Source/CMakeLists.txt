@@ -224,6 +224,13 @@ else()
     if(PSP_O3)
       add_compile_options(-O3)
     endif()
+    # GCC inserts a trap check on every integer divide unless told not to;
+    # the PSP has no use for it. Measured on hardware (see PSP-TODO.md).
+    add_compile_options(-mno-check-zero-division)
+    option(PSP_OS "Compile the PSP build with -Os (16KB I-cache experiment)" OFF)
+    if(PSP_OS)
+      add_compile_options(-Os)
+    endif()
     option(PSP_GPROF "Build with -pg and pspsdk's gprof profiler" OFF)
     if(PSP_GPROF)
       add_compile_options(-pg)

@@ -512,6 +512,24 @@ static void Pipe( FTransform& Result, const FSceneNode* Frame, const FVector& In
 #include <pspvfpu.h>
 #include <psprtc.h>
 static INT GPspUseVfpu = -1;
+// Polygons whose screen box is under this many square pixels skip the edge
+// raster and the span-buffer merge and go straight to the draw list; the
+// GE's depth buffer sorts them. They do not occlude anything (a tiny
+// polygon hides next to nothing anyway). Rejected once on PPSSPP numbers,
+// where the raster is cheap and the extra draws are not; on the PSP the
+// ratio is the other way round, hence the retest.
+//   [PSP] OccludeMinSize=0   ; square pixels; 0 = stock (rasterize everything)
+//   command line -OCCLUDEMIN=N overrides
+static INT   GPspOccludeMinSize = -1;
+static FLOAT GPspOccludeMinSizeF = 0.f;
+static INT   GPspTinyPolys = 0, GPspTinyFrames = 0;
+// Software prefetch (Allegrex `cache 0x1e` = D-cache fill), the tool retail
+// titles use for pointer chasing. The traversal touches the two child nodes
+// next; ClipBspSurf touches a node's points in random order through the
+// vertex pool. Both are known one step ahead.
+//   [PSP] Prefetch=0   ; 1 = on (no measured gain); command line -PREFETCH=N overrides
+static INT GPspPrefetch = 0;   // measured: no gain on hardware, see PSP-TODO.md
+#define PSP_PREFETCH(p) asm volatile( "cache 0x1e, 0(%0)" : : "r"(p) )
 static struct pspvfpu_context* GPspVfpuCtx = NULL;
 static FLOAT GPspClipTmp[4] __attribute__((aligned(16)));
 
@@ -642,6 +660,17 @@ INT URender::ClipBspSurf( INT iNode, FTransform**& Result )
 		PspVfpuInit( GFrame );
 	if( GPspUseVfpu )
 		PspVfpuLoadFrame( GFrame );
+	if( GPspPrefetch )
+	{
+		// Fills for every point (and its cache stamp) of this node before the
+		// transform loop below touches the first one.
+		for( INT i=0; i<NumPts; i++ )
+		{
+			const INT pPoint = VertPool[i].pVertex;
+			PSP_PREFETCH( &GPoints[pPoint] );
+			PSP_PREFETCH( &PointCache[pPoint] );
+		}
+	}
 #endif
 	for( INT i=0; i<NumPts; i++ )
 	{
@@ -1433,6 +1462,23 @@ void URender::OccludeBsp( FSceneNode* Frame )
 
 	// Start clocking stats.
 	STAT(uclock(GStat.OcclusionTime));
+#ifdef __PSP__
+	if( GPspOccludeMinSize < 0 )
+	{
+		GPspOccludeMinSize = 0;
+		GetConfigInt( "PSP", "OccludeMinSize", GPspOccludeMinSize );
+		Parse( appCmdLine(), "OCCLUDEMIN=", GPspOccludeMinSize );
+		GPspOccludeMinSizeF = (FLOAT)GPspOccludeMinSize;
+		GetConfigInt( "PSP", "Prefetch", GPspPrefetch );
+		Parse( appCmdLine(), "PREFETCH=", GPspPrefetch );
+		debugf( NAME_Log, "PSPPERF: occlusion min size = %d px^2, prefetch = %d", GPspOccludeMinSize, GPspPrefetch );
+	}
+	if( Frame->Parent == NULL && ++GPspTinyFrames == 100 )
+	{
+		debugf( NAME_Log, "PSPPERF:   tiny polys skipped: %d per 100 frames", GPspTinyPolys );
+		GPspTinyPolys = 0; GPspTinyFrames = 0;
+	}
+#endif
 
 	// Init temporary caches.
 	Stamp++;
@@ -1499,6 +1545,15 @@ void URender::OccludeBsp( FSceneNode* Frame )
 	for( ;; )
 	{
 		Node = &GNodes[iNode];
+#ifdef __PSP__
+		if( GPspPrefetch )
+		{
+			if( Node->iChild[0] != INDEX_NONE ) PSP_PREFETCH( &GNodes[Node->iChild[0]] );
+			if( Node->iChild[1] != INDEX_NONE ) PSP_PREFETCH( &GNodes[Node->iChild[1]] );
+			PSP_PREFETCH( &GSurfs[Node->iSurf] );
+			PSP_PREFETCH( &GVerts[Node->iVertPool] );
+		}
+#endif
 
 		// Pass 1: Process node for the first time and optionally recurse with front node.
 		if( Pass==PASS_Front )
@@ -1638,6 +1693,39 @@ void URender::OccludeBsp( FSceneNode* Frame )
 					for( INT i=0; i<NumPts/2; i++ )
 						Exchange( Pts[i], Pts[NumPts-i-1] );
 
+#ifdef __PSP__
+				if( GPspOccludeMinSize > 0 && !RenDev->SpanBased
+				&&	!(PolyFlags & (PF_FakeBackdrop|PF_Mirrored|PF_Portal|PF_Invisible)) )
+				{
+					FLOAT MinX = Pts[0]->ScreenX, MaxX = MinX, MinY = Pts[0]->ScreenY, MaxY = MinY;
+					for( INT i=1; i<NumPts; i++ )
+					{
+						const FLOAT X = Pts[i]->ScreenX, Y = Pts[i]->ScreenY;
+						if( X < MinX ) MinX = X; else if( X > MaxX ) MaxX = X;
+						if( Y < MinY ) MinY = Y; else if( Y > MaxY ) MaxY = Y;
+					}
+					if( ( MaxX - MinX ) * ( MaxY - MinY ) < GPspOccludeMinSizeF )
+					{
+						// Same bookkeeping as the normal path below, minus raster and span.
+						++GPspTinyPolys;
+						if( Poly->Texture )
+							PolyFlags |= Poly->Texture->PolyFlags;
+						PolyFlags &= PolyFlagMask;
+						Mergeable = !(PolyFlags & (PF_NoOcclude|PF_NoMerge|PF_Portal));
+						Merge = NULL;
+						if( Mergeable )
+						{
+							AZoneInfo* ZoneActor = Frame->Level->GetZoneActor(Node->iZone[IsFront]);
+							for( Merge=AllPolyDrawLists[Node->iSurf]; Merge; Merge=Merge->SurfNext )
+								if( Merge->Zone==ZoneActor )
+									break;
+						}
+						TempDrawList->Span.AllocIndex( 0, 0, &GMem );   // empty but valid: DrawIt releases it
+						DrawBin = 1 + ((PolyFlags & PF_NoOcclude)!=0);
+						goto DrawIt;
+					}
+				}
+#endif
 				// Setup.
 				uclock(GStat.RasterTime);
 				if( !SetupRaster( Pts, NumPts, (Node->NodeFlags & NF_PolyOccluded) ? SpanBuffer : NULL, Frame->Y ) )

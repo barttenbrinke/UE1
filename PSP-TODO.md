@@ -1,0 +1,69 @@
+# Unreal (1998) on PSP-2000: performance TODO
+
+State on 2026-09-24: card build renders correctly, 18-19 fps in typical
+intro scenes, 11-13 fps in the heaviest castle views (20 fps cap). All
+numbers below are from the real PSP over PSPLink; PPSSPP timings do not
+transfer (its recompiler makes CPU work nearly free).
+
+Where a heavy frame goes (ms, castle view): BSP occlusion ~33 (traversal
+13, clip 7, span buffer 7, edge raster 5, bounds 1.4), surface drawing ~15,
+meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
+
+## Being measured now (hardware A/B queued)
+
+- [ ] No software occlusion at all (`-OCCLUDEMIN=100000000`): the
+      Quake-port approach, frustum + Z-buffer. UE1 has no PVS, so this is
+      the overdraw upper bound, not a plan.
+- [ ] Compiler flags: `-mno-check-zero-division` (drops the trap check GCC
+      inserts on every integer divide; now on by default). `-Os` vs `-O2`
+      for the 16 KB I-cache (`-DPSP_OS=ON`, build-psplink-os). `-G0` is
+      already forced by prxgen.
+
+## Simple, to do next
+
+- [ ] Music volume/effects balance after the louder defaults
+      (SoundVolume 255, MusicVolume 180).
+
+## Bigger, in order of expected payoff
+
+- [ ] Hot/cold data layout for BSP nodes / points / vertex pool
+      (64-byte lines, 2-way 16 KB D-cache). Only if the prefetch result
+      shows the misses are the cost.
+- [ ] Media Engine: run the libxmp music player there and retire the
+      pre-rendered WAVs (interactive music back, 127 MB off the card).
+      Load the module on the main CPU, render on the ME (`xmp_play_buffer`,
+      integer/FPU only, no syscalls) into an uncached 64-byte-aligned ring
+      the existing hardware-channel streamer reads; section/volume/stop as
+      a polled command word. Kernel stub via mcidclan's ME custom core
+      (works on PRO-C). Blind to debug: heartbeat counters in shared memory.
+      Later: the mesh pass, once its CPU share is understood.
+- [ ] Botmatch "out of memory": unload engine texture mips and sound
+      samples after upload (~7 MB), consider TextureBudgetMB=4.
+- [ ] Interactive music: per-section WAV renders (the streamer plays one
+      file per song; UE1 switches sections with xmp_set_position).
+
+## Rejected on hardware numbers (do not retry)
+
+- Software prefetch (`cache 0x1e` fills for the child nodes and a node's
+  points one step ahead): 16.2 vs 16.3 fps mean, 10.6 vs 10.8 worst. The
+  traversal's misses are not hidden by one-step-ahead fills. Kept behind
+  `[PSP] Prefetch` (default 0) / `-PREFETCH=N`.
+- Skipping edge raster + span buffer for polygons under 64 or 256 px^2:
+  raster+span fell 614 -> 587/534 ms per 100 frames but surface drawing
+  rose 759 -> 945/1049; worst window 10.8 -> 9.3/9.0 fps. Same verdict as
+  PPSSPP gave. Kept behind `[PSP] OccludeMinSize` (default 0).
+
+- VFPU for the occlusion clip transform: arithmetic 2.1x faster, pass
+  unchanged (memory-bound). Kept as a verified building block.
+- GE vertex morphing for mesh animation: the keyframe interpolation it
+  would replace is 0.1 ms/frame of the 9-12 ms mesh cost. The cost is
+  per-triangle setup, per-vertex lighting and the driver's vertex
+  building, none of which the GE morph unit touches.
+- CurvedSurfaces=False: no measurable gain, angular actors.
+
+## Done (see git log on psp-port)
+
+- Single-precision math everywhere (no soft doubles), 333 MHz clock,
+  hardware palettes, facet/mesh batching, mapped pspgl VBO vertex ring,
+  pre-rendered music on a hardware channel, adaptive file window,
+  lightmap vertex lighting, gamma/light curve, texture budget/eviction.
