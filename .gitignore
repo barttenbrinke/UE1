@@ -16,3 +16,4 @@ build-psplink/
 build-psp-prof/
 build-psp-o3/
 build-psp-gprof/
+build-psplink-os/
