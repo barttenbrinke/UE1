@@ -40,6 +40,8 @@ cp "$HERE/Engine/Config/Default.ini" "$HERE/Engine/Config/Unreal.ini" "$DEST/Sys
 find "$DEST/System" \( -iname '*.dll' -o -iname '*.exe' \) -delete
 
 # Point the engine at the driver this build actually contains: the fixed
+# (Shiny surfaces render the scene twice through every mirror, high-detail
+# actors and coronas are extra draws; all off for the PSP's CPU.)
 # pipeline GL driver rather than the GLES one. Audio now uses NOpenALDrv,
 # with reverb compiled out (PSP_NO_EFX), so it is left alone.
 # The "=" anchors matter: without them these also rewrite the [section] headers,
@@ -50,6 +52,9 @@ sed -i '' \
   -e 's|^ViewportX=.*|ViewportX=480|' \
   -e 's|^ViewportY=.*|ViewportY=272|' \
   -e 's|^StartupFullscreen=.*|StartupFullscreen=True|' \
+  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^ShinySurfaces=.*|ShinySurfaces=False|' \
+  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^HighDetailActors=.*|HighDetailActors=False|' \
+  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^Coronas=.*|Coronas=False|' \
   -e 's|^OutputRate=.*|OutputRate=22050|' \
   -e 's|^MusicInterpolation=.*|MusicInterpolation=0|' \
   "$DEST/System/Default.ini" "$DEST/System/Unreal.ini"
@@ -67,7 +72,7 @@ LightMapHz=0      ; dynamic lightmap rebuild rate; 0 = every frame
 LightFX=1         ; torch/fire/water light waver effects
 VertexLight=1     ; fold lightmap into vertex colour: one geometry pass, not two
 LightScale=150    ; VertexLight brightness %, 100 matches the two-pass original
-Gamma=130         ; base texture gamma %, 100 = off
+Gamma=143         ; base texture gamma %, 100 = off
 VertexArrays=1    ; 0 = stock immediate-mode renderer (bisect switch)
 TextureBudgetMB=8 ; resident GL texture memory before least-recently-used eviction; the heap is ~38MB and Unreal's own data takes ~26MB
 PSPCFG
