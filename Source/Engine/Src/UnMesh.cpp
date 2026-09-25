@@ -150,6 +150,56 @@ UBOOL UMesh::LineCheck
 // Get the transformed point set corresponding to the animation frame 
 // of this primitive owned by Owner. Returns the total outcode of the points.
 //
+#ifdef __PSP__
+// Reloaded mesh render data is capped ([PSP] MeshBudgetKB): a deathmatch
+// eventually animates every mesh in the level (2.7 MB of DmRadikus's 6.6 MB
+// within five minutes on the emulator). Meshes not drawn for a couple of
+// seconds are dropped again, least recently drawn first; the next GetFrame
+// reloads them from the package.
+struct FPspMeshRec { UMesh* Mesh; INT Bytes; DOUBLE LastUse; };
+static TArray<FPspMeshRec> GPspMeshRecs;
+static INT GPspMeshResident = 0;
+static INT GPspMeshBudgetKB = -1;
+static void PspMeshTouch( UMesh* Mesh )
+{
+	for( INT i = 0; i < GPspMeshRecs.Num(); ++i )
+		if( GPspMeshRecs(i).Mesh == Mesh ) { GPspMeshRecs(i).LastUse = appSeconds(); return; }
+}
+static void PspMeshResident( UMesh* Mesh, INT Bytes )
+{
+	if( GPspMeshBudgetKB < 0 ) { GPspMeshBudgetKB = 1024; GetConfigInt( "PSP", "MeshBudgetKB", GPspMeshBudgetKB ); }
+	const DOUBLE Now = appSeconds();
+	FPspMeshRec Rec; Rec.Mesh = Mesh; Rec.Bytes = Bytes; Rec.LastUse = Now;
+	GPspMeshRecs.AddItem( Rec );
+	GPspMeshResident += Bytes;
+	while( GPspMeshResident > GPspMeshBudgetKB * 1024 )
+	{
+		INT Best = -1;
+		for( INT i = 0; i < GPspMeshRecs.Num(); ++i )
+			if( GPspMeshRecs(i).Mesh != Mesh && Now - GPspMeshRecs(i).LastUse > 2.0 && ( Best < 0 || GPspMeshRecs(i).LastUse < GPspMeshRecs(Best).LastUse ) )
+				Best = i;
+		if( Best < 0 ) break;   // everything resident was drawn in the last two seconds
+		UMesh* Victim = GPspMeshRecs(Best).Mesh;
+		GPspMeshResident -= GPspMeshRecs(Best).Bytes;
+		GPspMeshRecs.Remove( Best );
+		Victim->Verts.Empty(); Victim->Tris.Empty(); Victim->Connects.Empty(); Victim->VertLinks.Empty();
+	}
+}
+void UMesh::Destroy()
+{
+	guard(UMesh::Destroy);
+	for( INT i = 0; i < GPspMeshRecs.Num(); ++i )
+		if( GPspMeshRecs(i).Mesh == this )
+		{
+			GPspMeshResident -= GPspMeshRecs(i).Bytes;
+			GPspMeshRecs.Remove( i );
+			break;
+		}
+	Super::Destroy();
+	unguard;
+}
+#endif
+
 void UMesh::GetFrame
 (
 	FVector*	ResultVerts,
@@ -167,7 +217,12 @@ void UMesh::GetFrame
 			debugf( NAME_Warning, "UMesh::GetFrame: could not reload %s", GetName() );
 			return;
 		}
+		const INT Bytes = Verts.Num() * sizeof(FMeshVert) + Tris.Num() * sizeof(FMeshTri) + Connects.Num() * sizeof(FMeshVertConnect) + VertLinks.Num() * sizeof(INT);
+		GPspMeshReloadKB += Bytes / 1024;
+		PspMeshResident( this, Bytes );
 	}
+	else if( Verts.Num() )
+		PspMeshTouch( this );
 #endif
 
 	// Create or get cache memory.

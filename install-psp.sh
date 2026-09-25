@@ -99,6 +99,8 @@ Gamma=150         ; base texture gamma %, 100 = off
 LightGamma=210    ; lightmap curve %, 100 = linear; lifts dark areas without saturating bright ones
 VertexArrays=1    ; 0 = stock immediate-mode renderer (bisect switch)
 TextureBudgetMB=8 ; resident GL texture memory before least-recently-used eviction; the heap is ~38MB and Unreal's own data takes ~26MB
+SoundBudgetKB=2048 ; resident OpenAL sample memory; least recently played sounds are unregistered past this
+MeshBudgetKB=1024  ; reloaded mesh render data; meshes not drawn for 2 s are dropped past this
 PSPCFG
 fi
 

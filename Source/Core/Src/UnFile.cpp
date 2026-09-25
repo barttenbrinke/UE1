@@ -285,10 +285,26 @@ CORE_API const char* appPspHeapState()
 	return Buf;
 }
 #endif
+#ifdef __PSP__
+// Heap arena high-water mark from the allocator's break pointer. Unlike
+// mallinfo() this reads no chunk headers, so it is safe to call from the
+// main thread while the mixer thread allocates.
+static char* GPspHeapBase = NULL;
+CORE_API INT GPspMeshReloadKB = 0;
+CORE_API INT appPspArenaKB()
+{
+	char* Brk = (char*)sbrk( 0 );
+	if( !GPspHeapBase || Brk < GPspHeapBase ) GPspHeapBase = Brk;
+	return (INT)( ( Brk - GPspHeapBase ) / 1024 );
+}
+#endif
 CORE_API void* appMalloc( INT Size, const char* Tag )
 {
 	guard(appMalloc);
 	check(Size>0);
+#ifdef __PSP__
+	if( !GPspHeapBase ) appPspArenaKB();
+#endif
 
 #ifdef __PSP__
 	PspLowMemoryCheck( Size );

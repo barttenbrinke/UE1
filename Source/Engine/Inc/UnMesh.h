@@ -137,6 +137,9 @@ struct FMeshVertConnect
 class ENGINE_API UMesh : public UPrimitive
 {
 	DECLARE_CLASS_WITHOUT_CONSTRUCT(UMesh,UPrimitive,0)
+#ifdef __PSP__
+	void Destroy();   // drops this mesh from the resident render-data cap
+#endif
 
 	// Objects.
 	TArray<FMeshVert>		Verts;

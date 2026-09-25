@@ -77,6 +77,38 @@ static FPspMeShared* GPspMe = NULL;     // uncached alias
 static INT   GPspMeInit   = 0;          // 0 untried, 1 ready, -1 unavailable
 static UBOOL GPspMeActive = 0;          // current song renders on the ME
 static INT   GPspSndLog   = -1;         // -SNDLOG: trace effect playback (first calls only)
+// Resident OpenAL sample memory is capped: sounds upload on first play
+// (USound::Serialize defers them), and without a cap a long deathmatch
+// walks through every sound in the level (5 MB for DmRadikus). Least
+// recently played sounds that no voice references are unregistered; their
+// next play reloads them from the package.
+//   [PSP] SoundBudgetKB=2048
+struct FPspSndRec { USound* Sound; INT Bytes; DWORD Stamp; };
+static TArray<FPspSndRec> GPspSndRecs;
+static INT   GPspSndResident = 0;
+static DWORD GPspSndClock    = 0;
+static INT   GPspSndBudgetKB = -1;
+static INT   GPspSndEvicted  = 0;
+static INT PspSndBudgetKB()
+{
+	if( GPspSndBudgetKB < 0 ) { GPspSndBudgetKB = 2048; GetConfigInt( "PSP", "SoundBudgetKB", GPspSndBudgetKB ); }
+	return GPspSndBudgetKB;
+}
+static void PspSndForget( USound* Sound )
+{
+	for( INT i = 0; i < GPspSndRecs.Num(); ++i )
+		if( GPspSndRecs(i).Sound == Sound )
+		{
+			GPspSndResident -= GPspSndRecs(i).Bytes;
+			GPspSndRecs.Remove( i );
+			return;
+		}
+}
+static void PspSndTouch( USound* Sound )
+{
+	for( INT i = 0; i < GPspSndRecs.Num(); ++i )
+		if( GPspSndRecs(i).Sound == Sound ) { GPspSndRecs(i).Stamp = ++GPspSndClock; return; }
+}
 static UBOOL PspSndLog()
 {
 	if( GPspSndLog < 0 ) GPspSndLog = ParseParam( appCmdLine(), "SNDLOG" ) ? 1 : 0;
@@ -431,6 +463,7 @@ void UNOpenALAudioSubsystem::InternalClassInitializer( UClass* Class )
 	new(Class, "AmbientFactor",      RF_Public)UFloatProperty ( CPP_PROPERTY( AmbientFactor      ), "Audio", CPF_Config );
 	new(Class, "DopplerFactor",      RF_Public)UFloatProperty ( CPP_PROPERTY( DopplerFactor      ), "Audio", CPF_Config );
 	new(Class, "UseReverb",          RF_Public)UBoolProperty  ( CPP_PROPERTY( UseReverb          ), "Audio", CPF_Config );
+	new(Class, "LowSoundQuality",    RF_Public)UBoolProperty  ( CPP_PROPERTY( LowSoundQuality    ), "Audio", CPF_Config );
 	new(Class, "UseHRTF",            RF_Public)UBoolProperty  ( CPP_PROPERTY( UseHRTF            ), "Audio", CPF_Config );
 	new(Class, "MusicInterpolation", RF_Public)UByteProperty  ( CPP_PROPERTY( MusicInterpolation ), "Audio", CPF_Config );
 	new(Class, "MusicRate",          RF_Public)UIntProperty   ( CPP_PROPERTY( MusicRate          ), "Audio", CPF_Config );
@@ -448,6 +481,7 @@ UNOpenALAudioSubsystem::UNOpenALAudioSubsystem()
 	DopplerFactor = 0.01f;
 	UseHRTF = true;
 	UseReverb = true;
+	LowSoundQuality = false;
 	MusicInterpolation = XMP_INTERP_LINEAR;
 #ifdef __PSP__
 	// libxmp mixes on the CPU; a 333MHz MIPS cannot spare 22kHz stereo with
@@ -624,6 +658,9 @@ void UNOpenALAudioSubsystem::Destroy()
 		alcDestroyContext( Ctx );
 		Ctx = NULL;
 		Buffers.Empty();
+#ifdef __PSP__
+		GPspSndRecs.Empty(); GPspSndResident = 0;
+#endif
 	}
 
 	if( Device )
@@ -850,6 +887,30 @@ void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 		return;
 	}
 
+#ifdef __PSP__
+	{
+		const INT Budget = PspSndBudgetKB() * 1024;
+		const INT Need   = (INT)WaveInfo.SampleDataSize;
+		while( GPspSndResident + Need > Budget && GPspSndRecs.Num() )
+		{
+			INT Best = -1;
+			for( INT i = 0; i < GPspSndRecs.Num(); ++i )
+			{
+				UBOOL InUse = 0;
+				for( INT v = 0; v < MAX_SOURCES && !InUse; ++v )
+					InUse = ( Voices[v].Sound == GPspSndRecs(i).Sound );
+				if( !InUse && ( Best < 0 || GPspSndRecs(i).Stamp < GPspSndRecs(Best).Stamp ) )
+					Best = i;
+			}
+			if( Best < 0 ) break;   // everything resident is playing; go over budget rather than cut a voice
+			USound* Victim = GPspSndRecs(Best).Sound;
+			if( PspSndLog() )
+				debugf( NAME_Log, "PSPSND: evict %s (%d KB) for %s (%d KB); resident %d KB", Victim->GetName(), GPspSndRecs(Best).Bytes / 1024, Sound->GetName(), Need / 1024, GPspSndResident / 1024 );
+			++GPspSndEvicted;
+			UnregisterSound( Victim );   // drops its record too
+		}
+	}
+#endif
 	ALuint Buf = 0;
 	alGenBuffers( 1, &Buf );
 	Buffers.AddItem( Buf );
@@ -890,6 +951,13 @@ void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 	Sound->Looping = ( WaveInfo.SampleLoopsNum != 0 ); // the only indication of looping in this version of UE1
 #ifdef __PSP__
 	{
+		FPspSndRec Rec; Rec.Sound = Sound; Rec.Bytes = (INT)WaveInfo.SampleDataSize; Rec.Stamp = ++GPspSndClock;
+		GPspSndRecs.AddItem( Rec );
+		GPspSndResident += Rec.Bytes;
+	}
+#endif
+#ifdef __PSP__
+	{
 		static INT Count = 0;
 		if( PspSndLog() && ++Count <= 8 )
 			debugf( NAME_Log, "PSPSND: registered %s buf %u fmt %04x bytes %u rate %u alErr %04x", Sound->GetName(), Buf, Format, (unsigned)WaveInfo.SampleDataSize, (unsigned)*WaveInfo.pSamplesPerSec, alGetError() );
@@ -923,6 +991,9 @@ void UNOpenALAudioSubsystem::UnregisterSound( USound* Sound )
 		alDeleteBuffers( 1, &Buf );
 
 		Sound->Handle = NULL;
+#ifdef __PSP__
+		PspSndForget( Sound );
+#endif
 	}
 
 	unguard;
@@ -1076,6 +1147,9 @@ UBOOL UNOpenALAudioSubsystem::PlaySound( AActor* Actor, INT Id, USound* Sound, F
 #endif
 	if( !Voice || !Sound || !Sound->Handle )
 		return false;
+#ifdef __PSP__
+	PspSndTouch( Sound );
+#endif
 
 	ALuint Buf = (ALuint)Sound->Handle;
 	check( alIsBuffer( Buf ) );
@@ -1207,6 +1281,13 @@ void UNOpenALAudioSubsystem::StopMusic()
 void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 {
 	guard(UNOpenALAudioSubsystem::Update)
+#ifdef __PSP__
+	{
+		static INT Frames = 0;
+		if( ++Frames % 1200 == 0 )
+			debugf( NAME_Log, "PSPSND: resident %d KB in %d sounds (budget %d KB, %d evicted)", GPspSndResident / 1024, GPspSndRecs.Num(), PspSndBudgetKB(), GPspSndEvicted );
+	}
+#endif
 
 	if( !Viewport || !Viewport->IsRealtime() )
 		return;

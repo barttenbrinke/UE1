@@ -37,6 +37,7 @@ class DLL_EXPORT UNOpenALAudioSubsystem : public UAudioSubsystem
 	// Options
 	char DeviceName[256];
 	INT OutputRate;
+	UBOOL LowSoundQuality;   // halve the rate and use 8-bit samples at load (memory)
 	BYTE MasterVolume;
 	BYTE SoundVolume;
 	BYTE MusicVolume;
@@ -68,7 +69,7 @@ class DLL_EXPORT UNOpenALAudioSubsystem : public UAudioSubsystem
 	virtual void UnregisterMusic( UMusic* Music ) override;
 	virtual UBOOL PlaySound( AActor* Actor, INT Id, USound* Sound, FVector Location, FLOAT Volume, FLOAT Radius, FLOAT Pitch ) override;
 	virtual void NoteDestroy( AActor* Actor );
-	virtual UBOOL GetLowQualitySetting() override { return false; };
+	virtual UBOOL GetLowQualitySetting() override { return LowSoundQuality; };
 
 	// Internals.
 private:

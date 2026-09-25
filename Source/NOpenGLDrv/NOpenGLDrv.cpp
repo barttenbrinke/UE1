@@ -663,10 +663,18 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 			const DOUBLE Gouraud = GSecondsPerCycle * (DOUBLE)GPspAccGouraud;
 			const DOUBLE Tile    = GSecondsPerCycle * (DOUBLE)GPspAccTile;
 			const DOUBLE RendDev = Bind + Image + Complex + Gouraud + Tile;
-			debugf( NAME_Log, "PSPPERF: 100 frames in %.2fs = %.1f fps (%.0f ms/frame) | uploads=%u (%u new)",
+			debugf( NAME_Log, "PSPPERF: 100 frames in %.2fs = %.1f fps (%.0f ms/frame) | uploads=%u (%u new) | arena %iKB kfree %iKB tex %iKB meshreload %iKB",
 				(FLOAT)Elapsed, (FLOAT)( 100.0 / Max( Elapsed, (DOUBLE)0.001 ) ),
 				(FLOAT)( Elapsed * 10.0 ),
-				(unsigned)GPspUploadCount, (unsigned)( GPspUploadCount - GPspUploadLast ) );
+				(unsigned)GPspUploadCount, (unsigned)( GPspUploadCount - GPspUploadLast ),
+				appPspArenaKB(), (INT)( sceKernelTotalFreeMemSize() / 1024 ), GPspTexBytes / 1024, GPspMeshReloadKB );
+			{
+				// -MALLINFO: used/free inside the arena (walks the allocator's
+				// bins; emulator-only diagnostics, see PspLowMemoryCheck)
+				static INT MallInfo = -1;
+				if( MallInfo < 0 ) MallInfo = ParseParam( appCmdLine(), "MALLINFO" ) ? 1 : 0;
+				if( MallInfo ) debugf( NAME_Log, "PSPPERF: %s", appPspHeapState() );
+			}
 			{
 				// Where the CPU went, per thread, over this interval: the kernel's
 				// run clocks (microseconds) for every thread, as a share of wall

@@ -65,22 +65,32 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       XMB boot crash of 7846f886 with lazy loading on: NOT the lazy
       loading itself -- my low-memory probe called mallinfo() on every
       large allocation and newlib's bin walk raced the mixer thread
-      (fixed in 1b130a3, probe now opt-in). Card currently runs 7846f886
-      with the three Free*Data switches OFF in the ini. Reported on it:
-      music plays, sound effects (even menu clicks) are silent, and the
-      game crashed walking into the big room of level one (card run, so
-      the log is on the card: ms0:/PSP/GAME/Unreal/Unreal.log -- read it
-      first next session). The lazy-off registration path is upstream's
-      and the OpenAL PSP backend reserves its channel with
-      PSP_AUDIO_NEXT_CHANNEL (no clash with the Media Engine channel), so
-      the driver now has a `-SNDLOG` trace (device freq/sources, first
-      registrations, each PlaySound with handle/volume, source state and
-      alGetError after alSourcePlay). Next PSPLink session, in order:
-      1. card log; 2. `./Unreal.prx -SNDLOG` to the menu, then
-      `-SNDLOG -MUSICME=0` as the A/B; 3. push the staged EBOOT (mallinfo
-      fix + music bytes freed + trace) with the lazy-on ini; level one,
-      then a botmatch from the menu. LightGamma raised 170 -> 210 in the
-      installer and staged inis (shadow lift judged still too dark).
+      (fixed in 1b130a3, probe now opt-in). Second boot crash of the
+      staged build: the same probe read the command line before appInit()
+      had one (NULL deref in ParseParam; fixed). Silent sound effects with
+      UseReverb=False: with EFX compiled out the reverb `if` had an empty
+      body and swallowed the play/stop switch (fixed, verified by ear and
+      by the `-SNDLOG` trace). Card now runs df97bdfe with the lazy-on
+      ini (LightGamma 210). The level-one "big room" crash on the old
+      card build was most likely the mallinfo race (any large allocation
+      while the mixer thread allocates); the card writes no log, so it
+      can only be confirmed by not recurring.
+      Botmatch memory, reproduced on PPSSPP (DmRadikus, 4 bots, 5 min):
+      the heap grows after load as the match touches content -- mesh
+      render data reloaded by GetFrame (+2.6 MB, never freed again),
+      texture uploads (+1.3 MB, capped by TextureBudgetMB), sounds
+      uploaded on first play (+1.2 MB). Now capped: `[PSP] MeshBudgetKB`
+      (default 1024; meshes not drawn for 2 s are dropped, least recently
+      drawn first) and `[PSP] SoundBudgetKB` (default 2048; least
+      recently played sounds are unregistered). Five-minute result:
+      34.0 -> 37.2 MB used (was 39.8 MB). The 100-frame report line now
+      carries arena/kernel-free/texture/mesh-reload figures; `-MALLINFO`
+      adds allocator used/free (emulator only, see the race above).
+      `[Audio] LowSoundQuality` (8-bit, half rate at load) exists as a
+      further lever, off by default. Untested on hardware: a DM botmatch
+      under PSPLink (set InitialBots in the card ini, the URL takes no
+      bot option) to get the real load figure with the ME music; the
+      emulator's 32 MB after load excludes it.
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.
