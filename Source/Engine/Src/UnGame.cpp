@@ -348,7 +348,7 @@ UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 		if( GLevel && GLevel->GetLevelInfo()->HubStackLevel>0 )
 		{
 			char Filename[256], SavedPortal[256];
-			appSprintf( Filename, "%s\\Game%i.usa", GSys->SavePath, GLevel->GetLevelInfo()->HubStackLevel-1 );
+			appSprintf( Filename, "%s\\Game%i.usa", GSys->SavePath, GLevel->GetLevelInfo()->HubStackLevel-1 );   // URL (see the load= branch)
 			appStrcpy( SavedPortal, *URL.Portal );
 			URL = FURL( &URL, Filename, TRAVEL_Partial );
 			URL.Portal = SavedPortal;
@@ -368,6 +368,7 @@ UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 		// Handle restarting.
 		guard(LoadURL);
 		char Temp[256], Error256[256];
+		// URL, not a file path: FURL takes a forward slash as a host separator, so keep the backslash (the PSP file layer converts it)
 		appSprintf( Temp, "%s\\Save%i.usa?load", GSys->SavePath, appAtoi(Option) );
 		if( LoadMap(FURL(&LastURL,Temp,TRAVEL_Partial),NULL,Error256) )
 		{
@@ -459,6 +460,38 @@ UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 //
 // Load a map.
 //
+#ifdef __PSP__
+// Texture texels, sound samples, mesh render data and music bytes are
+// dropped after loading and re-read from the package on demand. A save
+// game serialises the level package's own objects, so anything embedded in
+// the map (MyLevel textures, level sounds) would be written empty and be
+// unrecoverable from the save. Bring them back first.
+static void PspReloadFreedForSave( UObject* Package )
+{
+	guard(PspReloadFreedForSave);
+	INT Reloaded = 0;
+	for( TObjectIterator<UObject> It; It; ++It )
+	{
+		if( !It->IsIn( Package ) || !It->GetLinker() )
+			continue;
+		UBOOL Empty = 0;
+		if( UTexture* T = Cast<UTexture>( *It ) )
+			Empty = T->Mips.Num() && T->USize > 0 && !T->Mips(0).DataArray.Num();
+		else if( USound* Snd = Cast<USound>( *It ) )
+			Empty = Snd->OriginalSize > 0 && !Snd->Data.Num();
+		else if( UMesh* M = Cast<UMesh>( *It ) )
+			Empty = M->FrameVerts > 0 && !M->Verts.Num();
+		else if( UMusic* Mu = Cast<UMusic>( *It ) )
+			Empty = Mu->OriginalSize > 0 && !Mu->Data.Num();
+		if( Empty && appReloadObject( *It ) )
+			++Reloaded;
+	}
+	if( Reloaded )
+		debugf( NAME_Log, "PSPPERF: reloaded %i freed objects of %s before saving", Reloaded, Package->GetName() );
+	unguard;
+}
+#endif
+
 ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Error256 )
 {
 	guard(UGameEngine::LoadMap);
@@ -471,9 +504,11 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 	const DOUBLE PspLoadStart = appSeconds();
 	// [PSP] MemDump=1 lists every object class with its memory after the
 	// load, while memory is still available to print with.
-	struct FPspLoadTimer { DOUBLE T0; const char* Map; ~FPspLoadTimer()
+	struct FPspLoadTimer { DOUBLE T0; const char* Map; UGameEngine* Engine; ~FPspLoadTimer()
 	{
-		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s", Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState() );
+		ULevel* L = Engine->GLevel; INT NullActors = 0;
+		if( L ) for( INT i = 0; i < L->Num(); ++i ) if( !L->Actors(i) ) ++NullActors;
+		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s; actors %i (%i null)", Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState(), L ? L->Num() : 0, NullActors );
 		INT Dump = 0; GetConfigInt( "PSP", "MemDump", Dump );
 		if( Dump )
 		{
@@ -497,7 +532,7 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 			for( INT i=0; i<Min(Tally.Num(),20); i++ )
 				debugf( NAME_Log, "PSPMEM:   %-28s %6i objects %6i KB", Tally(i).Class ? Tally(i).Class->GetName() : "?", Tally(i).Count, Tally(i).Bytes / 1024 );
 		}
-	} } PspLoadTimer = { PspLoadStart, *Str };
+	} } PspLoadTimer = { PspLoadStart, *Str, this };
 #endif
 
 	// Remember current level's stack level.
@@ -581,6 +616,9 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 			GLevel->CleanupDestroyed( 1 );
 			char Filename[256];
 			appSprintf( Filename, "%s" PATH_SEPARATOR "Game%i.usa", PATH(GSys->SavePath), SavedHubStackLevel );
+#ifdef __PSP__
+			PspReloadFreedForSave( GLevel->GetParent() );
+#endif
 			GObj.SavePackage( GLevel->GetParent(), GLevel, 0, Filename );
 		}
 		GLevel = NULL;
@@ -1107,6 +1145,38 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 
 	// Handle server travelling.
 	guard(ServerTravel);
+#ifdef __PSP__
+	// -MAPCYCLE=secs (test hook): walk a fixed map list through the game's
+	// own server travel, to compare the heap after repeated loads of the
+	// same map (leaks across level changes).
+	{
+		static INT   Cycle = -1; static FLOAT Left = 0.f; static INT Index = 0;
+		static const char* Maps[] = { "DmRadikus.unr?Game=UnrealI.DeathMatchGame", "NyLeve.unr", "Dig.unr", "Chizra.unr", "SkyTown.unr" };
+		if( Cycle < 0 ) { Cycle = 0; Parse( appCmdLine(), "MAPCYCLE=", Cycle ); Left = (FLOAT)Cycle; }
+		if( Cycle > 0 && GLevel && !*GLevel->GetLevelInfo()->NextURL )
+		{
+			Left -= DeltaSeconds;
+			if( Left <= 0.f )
+			{
+				appStrcpy( GLevel->GetLevelInfo()->NextURL, Maps[Index++ % ARRAY_COUNT(Maps)] );
+				GLevel->GetLevelInfo()->NextSwitchCountdown = 0.f;
+				Left = (FLOAT)Cycle;
+			}
+		}
+	}
+	// -SAVETEST=secs (test hook): save to slot 9 after N seconds in a map,
+	// load it back at 2N. Exercises the menu's SaveGame / ?load= paths.
+	{
+		static INT Test = -1; static FLOAT T = 0.f; static INT Stage = 0;
+		if( Test < 0 ) { Test = 0; Parse( appCmdLine(), "SAVETEST=", Test ); }
+		if( Test > 0 && GLevel && Stage < 2 )
+		{
+			T += DeltaSeconds;
+			if( Stage == 0 && T >= Test )       { Stage = 1; debugf( NAME_Log, "PSPTEST: SAVEGAME 9" ); Exec( "SAVEGAME 9", GSystem ); }
+			else if( Stage == 1 && T >= 2 * Test ) { Stage = 2; debugf( NAME_Log, "PSPTEST: START ?load=9" ); Exec( "START ?load=9", GSystem ); }
+		}
+	}
+#endif
 	if( GLevel && *GLevel->GetLevelInfo()->NextURL )
 	{
 		if( (GLevel->GetLevelInfo()->NextSwitchCountdown-=DeltaSeconds) <= 0.0 )
@@ -1239,6 +1309,9 @@ void UGameEngine::SaveGame( INT Position )
 		delete GLevel->BrushTracker;
 	}
 	GLevel->CleanupDestroyed( 1 );
+#ifdef __PSP__
+	PspReloadFreedForSave( GLevel->GetParent() );
+#endif
 	if( GObj.SavePackage( GLevel->GetParent(), GLevel, 0, Filename ) )
 	{
 		// Copy the hub stack.

@@ -84,6 +84,18 @@ void FArchive::Printf( const char* Fmt, ... )
 void FArray::Realloc( INT ElementSize )
 {
 	guard(FArray::Realloc);
+#ifdef __PSP__
+	// Big generic arrays get their caller's address as the tag, so the
+	// live-block table (appPspDumpBigBlocks) can say what they are:
+	// psp-addr2line -e build-psp/Unreal/Unreal <addr - 0x08804000>.
+	if( ArrayMax * ElementSize >= 65536 )
+	{
+		char Tag[40];
+		appSprintf( Tag, "FArray %ix%i @%08x", ArrayMax, ElementSize, (unsigned)__builtin_return_address( 0 ) );
+		Data = appRealloc( Data, ArrayMax*ElementSize, Tag );
+	}
+	else
+#endif
 	Data = appRealloc( Data, ArrayMax*ElementSize, "FArray" );
 	unguardf(( "%i*%i", ArrayMax, ElementSize ));
 }
