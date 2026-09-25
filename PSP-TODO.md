@@ -118,6 +118,27 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       slash as a host separator, so they keep the backslash and the PSP
       file layer converts it. Untested on hardware: saving to the memory
       stick (appMkdir creates Save/), and the load peak on a big level.
+      Hardware (2026-09-25, PSPLink): DmRadikus with 4 bots loads at
+      17.0 MB (was 39.4), plays at 16.6 fps mean, arena 27 MB after three
+      minutes, no crash. Save/load on the memory stick: the slot writes in
+      5 s, loads in 29 s. The first load crashed in pspgl's texture free
+      and the morning's exit crash was in _free_r: both after a music
+      stop, both gone with -MUSICME=0. Root cause: the Media Engine writes
+      libxmp's player state (CPU heap) through its own data cache; a
+      64-byte line shared with a neighbouring CPU block is written back
+      with stale neighbour bytes. This is also the real cause of the
+      "mallinfo race" boot crash (a corrupted bin walked). Fix: libxmp's
+      allocations get their own 64-byte aligned, padded blocks via
+      --wrap of malloc/calloc/realloc/free (NOpenALDrv.cpp; wrapping
+      newlib's _malloc_r instead broke its calloc). mallinfo is safe again
+      (appPspHeapUsedKB). Frame dips on the card were memory-stick reads
+      inside GetFrame / texture upload (lazy reloads when entering a new
+      room): `[PSP] PrefetchHeapMB` (30) reloads the level's meshes and
+      textures right after load until the heap reaches the limit (Dig:
+      26.4 -> 30.7 MB, +3 s load); MeshBudgetKB default 8192 so they
+      stay. Card: c49749ba + lazy ini (InitialBots=4 for the harness).
+      To judge by ear/eye: the dips, and the load-from-save peak on a big
+      level (arena hit 36.5 MB on Dig).
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.
