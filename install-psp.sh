@@ -88,7 +88,7 @@ if ! grep -q '^\[PSP\]' "$DEST/System/Unreal.ini"; then
   cat >> "$DEST/System/Unreal.ini" <<'PSPCFG'
 
 [PSP]
-MaxFPS=20         ; frame cap; GetMaxTickRate() returns 0 in single player
+MaxFPS=30         ; frame cap; GetMaxTickRate() returns 0 in single player
 TextureMaxFPS=8   ; procedural (fire) texture regeneration rate; 0 = every frame
 LightMaps=1       ; 0 drops the lightmap pass entirely (debug/bisect switch)
 LightMapHz=0      ; dynamic lightmap rebuild rate; 0 = every frame
