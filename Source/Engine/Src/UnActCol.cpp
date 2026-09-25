@@ -267,12 +267,29 @@ void FCollisionHash::RemoveActor( AActor* Actor )
 	check(Actor->bCollideActors);
 	if( Actor->bDeleteMe )
 		return;
-	if( Actor->Location!=Actor->ColLocation )
-		appErrorf( "%s moved without proper hashing", Actor->GetFullName() );
 
 	// Remove actor.
 	INT X0,Y0,Z0,X1,Y1,Z1;
 	INT ExpectFrags=0, FoundFrags=0;
+#ifdef __PSP__
+	// An actor whose Location changed without a rehash still has its links
+	// in the cells of the location it was hashed at (ColLocation). Fatal on
+	// the PC ("moved without proper hashing"; a falling ASMD pickup being
+	// destroyed did it in a deathmatch); here the links are removed from
+	// where they are and the game goes on.
+	if( Actor->Location!=Actor->ColLocation )
+	{
+		debugf( NAME_Warning, "%s moved without proper hashing; unhashing at its hashed location", Actor->GetFullName() );
+		const FVector Moved = Actor->Location;
+		Actor->Location = Actor->ColLocation;
+		GetActorExtent( Actor, X0, X1, Y0, Y1, Z0, Z1 );
+		Actor->Location = Moved;
+	}
+	else
+#else
+	if( Actor->Location!=Actor->ColLocation )
+		appErrorf( "%s moved without proper hashing", Actor->GetFullName() );
+#endif
 	GetActorExtent( Actor, X0, X1, Y0, Y1, Z0, Z1 );
 	for( INT X=X0; X<=X1; X++ )
 	{

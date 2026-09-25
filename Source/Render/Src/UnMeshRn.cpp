@@ -548,10 +548,66 @@ void URender::DrawMesh
 		// Draw the triangles.
 		guardSlow(DrawVisible);
 		STAT(GStat.MeshPolyCount+=VisibleTriangles);
+#ifdef __PSP__
+		// Fast path: triangles whose three vertices are inside the view and
+		// in front of the near plane need no clipping, so the driver takes
+		// them as one list per texture and flag set (DrawMeshTris). Anything
+		// else -- clipped, unlit, environment-mapped, invisible -- goes the
+		// per-triangle way below. Marked by PF_Invisible in a scratch copy of
+		// the flags so the loop below skips them.
+		UBOOL* Taken = New<UBOOL>(GMem,VisibleTriangles);
+		appMemset( Taken, 0, VisibleTriangles * sizeof(UBOOL) );
+		if( Frame->NearClip.W == 0.0 && Frame->Mirror != -1 && !(ExtraFlags & (PF_Unlit|PF_Environment)) )
+		{
+			const FMeshTri** List = New<const FMeshTri*>(GMem,VisibleTriangles);
+			for( INT Tex=0; Tex<Mesh->Textures.Num(); Tex++ )
+			{
+				// distinct flag sets for this texture, at most a handful
+				DWORD Seen[8]; INT NumSeen=0;
+				for( INT i=0; i<VisibleTriangles; i++ )
+				{
+					FMeshTri& Tri = *TriPool[i].Tri;
+					if( Tri.TextureIndex != Tex ) continue;
+					DWORD PolyFlags = Tri.PolyFlags | ExtraFlags;
+					INT k; for( k=0; k<NumSeen; k++ ) if( Seen[k]==PolyFlags ) break;
+					if( k==NumSeen && NumSeen<8 ) Seen[NumSeen++]=PolyFlags;
+				}
+				for( INT s=0; s<NumSeen; s++ )
+				{
+					const DWORD PolyFlags = Seen[s];
+					if( PolyFlags & (PF_Invisible|PF_Unlit|PF_Environment) ) continue;
+					INT Count=0;
+					for( INT i=0; i<VisibleTriangles; i++ )
+					{
+						FMeshTri& Tri = *TriPool[i].Tri;
+						if( Tri.TextureIndex != Tex || (Tri.PolyFlags | ExtraFlags) != PolyFlags ) continue;
+						const FTransTexture& A = Samples[Tri.iVertex[0]];
+						const FTransTexture& B = Samples[Tri.iVertex[1]];
+						const FTransTexture& C = Samples[Tri.iVertex[2]];
+						if( (A.Flags|B.Flags|C.Flags) || A.Point.Z<=1.f || B.Point.Z<=1.f || C.Point.Z<=1.f ) continue;
+						List[Count++] = &Tri; Taken[i] = 1;
+					}
+					if( !Count ) continue;
+					FTextureInfo& Info = Textures[Tex] ? TextureInfo[Tex] : EnvironmentInfo;
+					const FLOAT US = Info.UScale * Info.USize / 256.0;
+					const FLOAT VS = Info.VScale * Info.VSize / 256.0;
+					STAT(uclock(GStat.MeshTmapTime));
+					const UBOOL Ok = Frame->Viewport->RenDev->DrawMeshTris( Frame, Info, Samples, List, Count, PolyFlags, US, VS );
+					STAT(uunclock(GStat.MeshTmapTime));
+					if( !Ok )
+						for( INT i=0; i<VisibleTriangles; i++ ) if( Taken[i] && TriPool[i].Tri->TextureIndex==Tex && (TriPool[i].Tri->PolyFlags|ExtraFlags)==PolyFlags ) Taken[i]=0;
+				}
+			}
+		}
+#endif
 		for( INT i=0; i<VisibleTriangles; i++ )
 		{
 			// Set up the triangle.
 			FMeshTri& Tri = *TriPool[i].Tri;
+#ifdef __PSP__
+			if( Taken[i] )
+				continue;
+#endif
 			if( !(Tri.PolyFlags & PF_Invisible) )
 			{
 				// Get texture.

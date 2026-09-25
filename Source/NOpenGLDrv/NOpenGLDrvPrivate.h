@@ -108,6 +108,7 @@ class DLL_EXPORT UNOpenGLRenderDevice : public URenderDevice
 	// UNOpenGLRenderDevice interface.
 	void SetSceneNode( FSceneNode* Frame );
 	void SetBlend( DWORD PolyFlags, UBOOL InverseOrder = false );
+	UBOOL DrawMeshTris( FSceneNode* Frame, FTextureInfo& Info, FTransTexture* Samples, const struct FMeshTri* const* Tris, INT NumTris, DWORD PolyFlags, FLOAT UScale, FLOAT VScale ) override;
 	void SetTexture( INT TMU, FTextureInfo& Info, DWORD PolyFlags, FLOAT PanBias );
 	void ResetTexture( INT TMU );
 	void UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOOL NewTexture );

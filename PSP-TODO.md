@@ -139,6 +139,25 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       stay. Card: c49749ba + lazy ini (InitialBots=4 for the harness).
       To judge by ear/eye: the dips, and the load-from-save peak on a big
       level (arena hit 36.5 MB on Dig).
+      Mesh cost on the card (four bots in view, per 100 frames): mesh 3300
+      ms of which "sub" 3500 (nested) and tmap 1050. "sub" is curved-surface
+      subdivision: the active client section ([NSDLDrv.NSDLClient]) had
+      CurvedSurfaces=True while the earlier "no gain" test had flipped the
+      WinDrv section. Hardware A/B with it off: mesh 1679 -> 622 ms/100f
+      average over the match, sub 1585 -> 0, tmap 519 -> 316. Installer
+      now writes CurvedSurfaces=False into the NSDLClient section.
+      GE mesh path, first step (DrawMeshTris): the renderer hands the
+      driver each mesh's visible triangles per texture/flag set when all
+      three vertices are inside the view and past the near plane; the
+      driver writes them straight into the batch ring with the vertex
+      colour converted once per vertex per call. Clipped, unlit,
+      environment-mapped triangles keep the per-polygon path. Verified on
+      PPSSPP (clean); hardware numbers pending. Next steps for the GE
+      path: indexed draws (dedupe vertex+UV pairs per mesh once), and
+      moving the vertex transform to the GE via a per-actor matrix.
+      A falling ASMD pickup destroyed itself with "moved without proper
+      hashing" (fatal appError, DmRadikus): on PSP the unhash now removes
+      the links at the hashed location and warns instead.
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.

@@ -1830,6 +1830,88 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 		unguard;
 }
 
+// A mesh's triangle list straight into the batch ring: no per-triangle
+// clip tests, no fan buffer, and each vertex's light is converted to bytes
+// once per call instead of once per triangle corner (a vertex is shared by
+// ~6 triangles). The GE clips the side planes; the renderer only sends
+// triangles whose vertices are all inside the view and in front of the
+// near plane, the rest keep the per-polygon path.
+UBOOL UNOpenGLRenderDevice::DrawMeshTris( FSceneNode* Frame, FTextureInfo& Texture, FTransTexture* Samples, const FMeshTri* const* Tris, INT NumTris, DWORD PolyFlags, FLOAT UScale, FLOAT VScale )
+{
+	guard(UNOpenGLRenderDevice::DrawMeshTris);
+#ifdef __PSP__
+	const UBOOL bFogPass = ( (PolyFlags & (PF_RenderFog|PF_Translucent|PF_Modulated)) == PF_RenderFog );
+	if( bFogPass || NumTris <= 0 )
+		return 0;
+	uclock(GouraudCycles);
+	const UBOOL Modulated = ( PolyFlags & PF_Modulated );
+	const UBOOL Realtime  = ( Texture.TextureFlags & TF_RealtimeChanged );
+	if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime ) )
+		PspFlushBatch();
+	if( !GPspBatchOpen )
+	{
+		SetSceneNode( Frame );
+		SetBlend( PolyFlags );
+		SetTexture( 0, Texture, ( PolyFlags & PF_Masked ), 0 );
+		ResetTexture( 1 );
+		ResetTexture( 2 );
+		ResetTexture( 3 );
+		GPspBatchOpen  = 1;
+		GPspBatchTex   = Texture.CacheID;
+		GPspBatchFlags = PolyFlags;
+		GPspBatchFrame = Frame;
+	}
+	const FLOAT UM = UScale * TexInfo[0].UMult;
+	const FLOAT VM = VScale * TexInfo[0].VMult;
+	enum { CACHE = 4096 };
+	static DWORD ColorCache[CACHE];
+	static DWORD ColorStamp[CACHE];
+	static DWORD Stamp = 0;
+	if( ++Stamp == 0 ) { appMemset( ColorStamp, 0, sizeof(ColorStamp) ); Stamp = 1; }
+	INT Done = 0;
+	while( Done < NumTris )
+	{
+		const INT Chunk = Min( NumTris - Done, (INT)( PSP_BATCH_MAX_VERTS / 3 ) );
+		BYTE* Out = PspBatchReserve( Chunk * 3 );
+		if( !Out )
+			break;
+		for( INT i = 0; i < Chunk; ++i )
+		{
+			const FMeshTri& T = *Tris[Done + i];
+			for( INT j = 0; j < 3; ++j )
+			{
+				const INT iv = T.iVertex[j];
+				const FTransTexture& P = Samples[iv];
+				FLOAT* UV = (FLOAT*)Out;
+				UV[0] = (FLOAT)T.Tex[j].U * UM;
+				UV[1] = (FLOAT)T.Tex[j].V * VM;
+				DWORD* C = (DWORD*)( Out + 8 );
+				if( Modulated )
+					*C = 0xFFFFFFFF;
+				else if( iv < CACHE && ColorStamp[iv] == Stamp )
+					*C = ColorCache[iv];
+				else
+				{
+					const DWORD Packed = (DWORD)PspToByte( P.Light.X ) | ( (DWORD)PspToByte( P.Light.Y ) << 8 ) | ( (DWORD)PspToByte( P.Light.Z ) << 16 ) | 0xFF000000u;
+					*C = Packed;
+					if( iv < CACHE ) { ColorCache[iv] = Packed; ColorStamp[iv] = Stamp; }
+				}
+				FLOAT* P3 = (FLOAT*)( Out + 12 );
+				P3[0] = P.Point.X; P3[1] = P.Point.Y; P3[2] = P.Point.Z;
+				Out += 24;
+			}
+		}
+		Done += Chunk;
+		GPspBatchPolys += Chunk;
+	}
+	uunclock(GouraudCycles);
+	return Done == NumTris;
+#else
+	return 0;
+#endif
+	unguard;
+}
+
 void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, FLOAT X, FLOAT Y, FLOAT XL, FLOAT YL, FLOAT U, FLOAT V, FLOAT UL, FLOAT VL, FSpanBuffer* Span, FLOAT Z, FPlane Light, FPlane Fog, DWORD PolyFlags )
 {
 #ifdef __PSP__

@@ -138,6 +138,8 @@ sed -i '' \
   "$DEST/System/Unreal.ini"
 # The nub drifts a little at rest: a 20% dead zone.
 sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^DeadZoneXYZ=.*|DeadZoneXYZ=0.2|' "$DEST/System/Unreal.ini"
+# Curved surfaces subdivide and re-light every close mesh triangle on the CPU: 25 ms/frame with four bots in view on the PSP
+sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^CurvedSurfaces=.*|CurvedSurfaces=False|' "$DEST/System/Unreal.ini"
 
 # macOS writes a 4KB "._name" AppleDouble beside every file written to a
 # FAT/exFAT volume, and the PSP lists those as "Corrupted Data". rsync creates

@@ -50,6 +50,11 @@ class ENGINE_API URenderDevice : public USubsystem
 	virtual void Unlock( UBOOL Blit )=0;
 	virtual void DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet )=0;
 	virtual void DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& Info, FTransTexture** Pts, int NumPts, DWORD PolyFlags, FSpanBuffer* Span )=0;
+	// PSP: a mesh's visible, unclipped triangles in one go -- camera-space
+	// points and per-vertex light from Samples, texture coordinates from the
+	// triangles (byte UVs times UScale/VScale). Returns 0 when unsupported;
+	// the renderer then falls back to DrawGouraudPolygon per triangle.
+	virtual UBOOL DrawMeshTris( FSceneNode* Frame, FTextureInfo& Info, FTransTexture* Samples, const struct FMeshTri* const* Tris, INT NumTris, DWORD PolyFlags, FLOAT UScale, FLOAT VScale ) { return 0; }
 	virtual void DrawTile( FSceneNode* Frame, FTextureInfo& Info, FLOAT X, FLOAT Y, FLOAT XL, FLOAT YL, FLOAT U, FLOAT V, FLOAT UL, FLOAT VL, class FSpanBuffer* Span, FLOAT Z, FPlane Color, FPlane Fog, DWORD PolyFlags )=0;
 	virtual void Draw2DLine( FSceneNode* Frame, FPlane Color, DWORD LineFlags, FVector P1, FVector P2 )=0;
 	virtual void Draw2DPoint( FSceneNode* Frame, FPlane Color, DWORD LineFlags, FLOAT X1, FLOAT Y1, FLOAT X2, FLOAT Y2 )=0;
