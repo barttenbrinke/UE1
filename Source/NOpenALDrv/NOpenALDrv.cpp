@@ -624,7 +624,17 @@ UBOOL UNOpenALAudioSubsystem::Init()
 #endif
 	alListenerf( AL_GAIN, MasterVolume / 255.f );
 
-	alGenSources( MAX_SOURCES, Sources );
+#ifdef __PSP__
+	// Voices actually mixed. openal-soft's mixer thread took 23% of the CPU
+	// in a four-bot match with 64 sources; UE1 already drops the lowest
+	// priority sound when the voices run out.   [PSP] MaxVoices=16
+	NumSources = 16;
+	GetConfigInt( "PSP", "MaxVoices", NumSources );
+	NumSources = Clamp( NumSources, 4, (INT)MAX_SOURCES );
+#else
+	NumSources = MAX_SOURCES;
+#endif
+	alGenSources( NumSources, Sources );
 #ifdef __PSP__
 	{
 		ALCint Freq = 0, Mono = 0, Stereo = 0;
@@ -632,7 +642,7 @@ UBOOL UNOpenALAudioSubsystem::Init()
 		alcGetIntegerv( Device, ALC_MONO_SOURCES, 1, &Mono );
 		alcGetIntegerv( Device, ALC_STEREO_SOURCES, 1, &Stereo );
 		debugf( NAME_Log, "PSPSND: device freq %d mono %d stereo %d sources %d alErr %04x alcErr %04x master %d sound %d music %d",
-			Freq, Mono, Stereo, MAX_SOURCES, alGetError(), alcGetError( Device ), MasterVolume, SoundVolume, MusicVolume );
+			Freq, Mono, Stereo, NumSources, alGetError(), alcGetError( Device ), MasterVolume, SoundVolume, MusicVolume );
 	}
 #endif
 
@@ -669,7 +679,7 @@ UBOOL UNOpenALAudioSubsystem::Init()
 		ReverbOn = false;
 	}
 
-	for( INT i = 0; i < MAX_SOURCES; ++i )
+	for( INT i = 0; i < NumSources; ++i )
 		Voices[i].Buffer = INVALID_BUFFER;
 
 	MusicCtx = xmp_create_context();
@@ -721,7 +731,7 @@ void UNOpenALAudioSubsystem::Destroy()
 		SetViewport( NULL ); // This will also stop all sounds.
 		alDeleteBuffers( Buffers.Num(), &Buffers(0) );
 		alDeleteBuffers( ARRAY_COUNT( MusicBuffers ), MusicBuffers );
-		alDeleteSources( MAX_SOURCES, Sources );
+		alDeleteSources( NumSources, Sources );
 		alDeleteSources( 1, &MusicSource );
 		alcMakeContextCurrent( NULL );
 		alcDestroyContext( Ctx );
@@ -823,7 +833,7 @@ void UNOpenALAudioSubsystem::SetViewport( UViewport* InViewport )
 	guard(UNOpenALAudioSubsystem::SetViewport)
 
 	// Stop all sounds before viewport change.
-	for( INT i = 0; i < MAX_SOURCES; ++i )
+	for( INT i = 0; i < NumSources; ++i )
 		StopVoice( i );
 
 	// Stop and free music if the viewport has changed.
@@ -970,7 +980,7 @@ void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 			for( INT i = 0; i < GPspSndRecs.Num(); ++i )
 			{
 				UBOOL InUse = 0;
-				for( INT v = 0; v < MAX_SOURCES && !InUse; ++v )
+				for( INT v = 0; v < NumSources && !InUse; ++v )
 					InUse = ( Voices[v].Sound == GPspSndRecs(i).Sound );
 				if( !InUse && ( Best < 0 || GPspSndRecs(i).Stamp < GPspSndRecs(Best).Stamp ) )
 					Best = i;
@@ -1054,7 +1064,7 @@ void UNOpenALAudioSubsystem::UnregisterSound( USound* Sound )
 		ALuint Buf = (ALuint)Sound->Handle;
 		check( alIsBuffer( Buf ) );
 
-		for( INT i = 0; i < MAX_SOURCES; ++i )
+		for( INT i = 0; i < NumSources; ++i )
 		{
 			if( Voices[i].Sound == Sound )
 				StopVoice( i );
@@ -1185,7 +1195,7 @@ UBOOL UNOpenALAudioSubsystem::PlaySound( AActor* Actor, INT Id, USound* Sound, F
 	FLOAT Priority = GetVoicePriority( Location, Volume, Radius );
 	FLOAT MaxPriority = Priority;
 	FNVoice* Voice = NULL;
-	for( INT i = 0; i < MAX_SOURCES; ++i )
+	for( INT i = 0; i < NumSources; ++i )
 	{
 		FNVoice* V = &Voices[i];
 		if( ( V->Id & ~1 ) == ( Id & ~1 ) )
@@ -1254,7 +1264,7 @@ void UNOpenALAudioSubsystem::NoteDestroy( AActor* Actor )
 
 	check(Actor);
 	check(Actor->IsValid());
-	for( INT i = 0; i < MAX_SOURCES; ++i)
+	for( INT i = 0; i < NumSources; ++i)
 	{
 		if( Voices[i].Actor == Actor )
 		{
@@ -1410,14 +1420,14 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 			// See if it's already playing.
 			INT Id = AMBIENT_SOUND_ID( Actor->GetIndex() );
 			INT AmbientNum;
-			for( AmbientNum = 0; AmbientNum < MAX_SOURCES; ++AmbientNum )
+			for( AmbientNum = 0; AmbientNum < NumSources; ++AmbientNum )
 			{
 				if( Voices[AmbientNum].Id == Id )
 					break;
 			}
 
 			// If not, start it.
-			if( AmbientNum == MAX_SOURCES )
+			if( AmbientNum == NumSources )
 			{
 				FLOAT Vol = AmbientFactor * Actor->SoundVolume / 255.f;
 				FLOAT Rad = Actor->WorldSoundRadius();
@@ -1428,7 +1438,7 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 	}
 
 	// Update active ambient sounds.
-	for( INT VoiceNum = 0; VoiceNum < MAX_SOURCES; ++VoiceNum )
+	for( INT VoiceNum = 0; VoiceNum < NumSources; ++VoiceNum )
 	{
 		FNVoice& Voice = Voices[VoiceNum];
 		if( !Voice.Id || !Voice.Sound || Voice.Buffer == INVALID_BUFFER || !SOUND_SLOT_IS( Voice.Id, SLOT_Ambient ) )
@@ -1455,7 +1465,7 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 	}
 
 	// Update all active voices.
-	for( INT VoiceNum = 0; VoiceNum < MAX_SOURCES; ++VoiceNum )
+	for( INT VoiceNum = 0; VoiceNum < NumSources; ++VoiceNum )
 	{
 		FNVoice& Voice = Voices[VoiceNum];
 		if( !Voice.Id || !Voice.Sound || Voice.Buffer == INVALID_BUFFER )

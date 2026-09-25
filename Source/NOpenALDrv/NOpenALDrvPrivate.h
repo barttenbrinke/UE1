@@ -77,6 +77,7 @@ private:
 	ALCdevice* Device;
 	ALCcontext* Ctx;
 	ALuint Sources[MAX_SOURCES];
+	INT NumSources;   // voices in use, <= MAX_SOURCES ([PSP] MaxVoices)
 	TArray<ALuint> Buffers;
 	INT NextId;
 	FCoords ListenerCoords;

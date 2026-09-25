@@ -167,6 +167,12 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       fire textures (image 444 -> 129, complex 577 -> 290). Frame rate
       stayed at the 20 fps cap; the main thread went 66% -> 48% busy, so
       the cap is now the limit: MaxFPS=30 is the next A/B.
+      MaxFPS 30: mean 24.0 fps (worst 13.6) vs 17.8 at the 20 cap, same
+      match. The mixer thread (openal-soft) was then 23% of the CPU with
+      64 sources; `[PSP] MaxVoices` (default 16, UE1 drops the lowest
+      priority sound when voices run out) took it to 7.5% and the match
+      to 27.3 fps mean, worst 14.8. Sixteen voices not yet judged by
+      ear (ambient-heavy levels may lose sounds).
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.

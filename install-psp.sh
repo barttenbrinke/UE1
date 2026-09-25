@@ -102,6 +102,7 @@ TextureBudgetMB=8 ; resident GL texture memory before least-recently-used evicti
 SoundBudgetKB=2048 ; resident OpenAL sample memory; least recently played sounds are unregistered past this
 MeshBudgetKB=8192  ; reloaded mesh render data; meshes not drawn for 2 s are dropped past this
 PrefetchHeapMB=30  ; after a level loads, reload its meshes and textures from the stick until the heap reaches this (no first-draw stalls)
+MaxVoices=16       ; sounds mixed at once; the mixer thread took 23% of the CPU with 64
 PSPCFG
 fi
 
