@@ -20,9 +20,36 @@ void USound::Serialize( FArchive& Ar )
 	Ar << FileType;
 	if( Ar.IsLoading() || Ar.IsSaving() )
 	{
+#ifdef __PSP__
+		// Deferred sounds (see below) do not read their samples at all: the
+		// loader seeks past them and the first play re-reads the object.
+		static INT DeferRead = -1;
+		if( DeferRead < 0 ) { DeferRead = 1; GetConfigInt( "PSP", "FreeSoundData", DeferRead ); }
+		INT SkippedBytes = -1;
+		if( DeferRead && Ar.IsLoading() && !GPspReloading && GetLinker() && Audio && !GIsEditor )
+		{
+			INT Bytes = 0;
+			Ar << AR_INDEX(Bytes);
+			if( Bytes > 0 && !Ar.Skip( Bytes ) )
+			{
+				Data.Empty(); Data.Add( Bytes );
+				Ar.Serialize( &Data(0), Bytes );
+			}
+			Data.Empty();
+			SkippedBytes = Bytes;
+		}
+		else
+#endif
 		Ar << Data;
 		if( Ar.IsLoading() )
 		{
+#ifdef __PSP__
+			if( SkippedBytes >= 0 )
+			{
+				OriginalSize = SkippedBytes;
+				return;   // nothing to downsample or register; the first play reloads
+			}
+#endif
 			// Derive these from the exposed 'low quality' preference setting.
 			INT Force8Bit = 0;
 			INT ForceHalve = 0;

@@ -841,6 +841,7 @@ enum
 {
 	PSP_MAX_FILES          = 96,     // logical slots: a level change keeps both levels' packages open (32 was hit by Vortex2 -- 'Error opening file')
 	PSP_FILE_BUFSZ         = 16384,
+	PSP_FILE_WINDOWS       = 4,      // read windows per file during a level load
 	PSP_FILE_MINREFILL     = 2048,    // first read after a seek; doubles while sequential
 	PSP_MAX_KERNEL_HANDLES = 6,
 };
@@ -854,21 +855,43 @@ struct FPspFile
 	INT		FilePos;		// logical position, what appFtell reports
 	INT		KernelPos;		// where the kernel handle actually sits
 	INT		LastUse;		// for LRU eviction
-	BYTE*	Buffer;			// read window, allocated on first buffered read
-	INT		BufBase;		// file offset of Buffer[0]
-	INT		BufLen;			// valid bytes in Buffer
+	// Read windows (see appFread): a level load jumps between an object and
+	// its dependencies, so one window thrashed; a few, LRU-replaced, keep the
+	// recently touched regions. Allocated on demand; all but the first are
+	// freed when a level load ends.
+	struct FWin { BYTE* Buf; INT Base; INT Len; INT Use; } Win[PSP_FILE_WINDOWS];
+	INT		LastWin;		// window of the most recent refill (sequential-read detection)
 	INT		NextRefill;		// bytes to read on the next window refill (adaptive)
+	BYTE*	Whole;			// the entire file, while a level load is in progress (see appPspLoadCacheBegin)
+	INT		WholeSize;
 };
 
 // Memory Stick traffic, for the PSPPERF report: window refills and bytes.
 CORE_API INT GPspFileRefills = 0, GPspFileRefillBytes = 0;
+// ...and where the time goes: cycles inside sceIoRead/Lseek/Open, seeks, reopens (level loads)
+CORE_API INT GPspFileSeeks = 0, GPspFileReopens = 0;
+CORE_API SQWORD GPspFileIoCycles = 0;
+// Level loads read packages in a jumpy order (objects load on demand, each
+// jumping to its own offset and back), so the 16 KB window thrashed: an
+// Entry load made 6274 stick reads with 5710 seeks for ~5 MB of data, ~19 s
+// on the console. While a load is in progress, read-only files up to
+// [PSP] LoadCacheMB are read whole, sequentially, and served from memory;
+// the buffers go at the end of the load.  [PSP] LoadCacheHeapMB caps the
+// heap they may push to.
+static UBOOL GPspLoadCache = 0;
+static INT   GPspLoadCacheFiles = 0, GPspLoadCacheKB = 0;
+static INT   GPspLoadCacheMaxKB = -1, GPspLoadCacheHeapKB = 0;
 
 // Move the kernel handle only when it is not already in the right place.
 static INT PspSeekTo( FPspFile* Slot, INT Offset )
 {
 	if( Slot->KernelPos == Offset )
 		return 0;
-	if( sceIoLseek32( Slot->Fd, Offset, PSP_SEEK_SET ) < 0 )
+	++GPspFileSeeks;
+	const DWORD C0 = appCycles();
+	const int R = sceIoLseek32( Slot->Fd, Offset, PSP_SEEK_SET );
+	GPspFileIoCycles += (DWORD)( appCycles() - C0 );
+	if( R < 0 )
 	{
 		Slot->Error = 1;
 		return -1;
@@ -937,7 +960,12 @@ static INT PspEnsureOpen( FPspFile* Slot )
 
 	// Reopening must not truncate a file we are partway through.
 	INT ReopenFlags = Slot->Flags & ~(PSP_O_TRUNC|PSP_O_CREAT);
-	Slot->Fd = sceIoOpen( Slot->Path, ReopenFlags, 0777 );
+	++GPspFileReopens;
+	{
+		const DWORD C0 = appCycles();
+		Slot->Fd = sceIoOpen( Slot->Path, ReopenFlags, 0777 );
+		GPspFileIoCycles += (DWORD)( appCycles() - C0 );
+	}
 
 	if( Slot->Fd < 0 )
 	{
@@ -949,6 +977,84 @@ static INT PspEnsureOpen( FPspFile* Slot )
 }
 
 #define PSPFILE(Stream) ((FPspFile*)(Stream))
+
+static void PspWholeLoad( FPspFile* Slot )
+{
+	if( Slot->Whole || Slot->Flags != PSP_O_RDONLY )
+		return;
+	if( GPspLoadCacheMaxKB < 0 )
+	{
+		INT MB = 2, HeapMB = 30;   // UnrealI.u is 37 MB and the texture packages 5-13 MB: only the small ones go whole
+		GetConfigInt( "PSP", "LoadCacheMB", MB );
+		GetConfigInt( "PSP", "LoadCacheHeapMB", HeapMB );
+		GPspLoadCacheMaxKB  = MB * 1024;
+		GPspLoadCacheHeapKB = HeapMB * 1024;
+	}
+	if( GPspLoadCacheMaxKB <= 0 || PspEnsureOpen( Slot ) < 0 )
+		return;
+	const DWORD C0 = appCycles();
+	const INT Size = (INT)sceIoLseek32( Slot->Fd, 0, PSP_SEEK_END );
+	if( Size <= 0 || Size / 1024 > GPspLoadCacheMaxKB || appPspHeapUsedKB() + Size / 1024 > GPspLoadCacheHeapKB )
+	{
+		if( Size > 0 )
+			debugf( NAME_Log, "PSPLOAD: not cached %s (%i KB; heap %i KB)", Slot->Path, Size / 1024, appPspHeapUsedKB() );
+		Slot->KernelPos = Size > 0 ? Size : Slot->KernelPos;
+		GPspFileIoCycles += (DWORD)( appCycles() - C0 );
+		return;
+	}
+	BYTE* Buf = (BYTE*)malloc( Size );
+	if( !Buf )
+	{
+		Slot->KernelPos = Size;
+		return;
+	}
+	sceIoLseek32( Slot->Fd, 0, PSP_SEEK_SET );
+	INT Got = 0;
+	while( Got < Size )
+	{
+		const INT N = sceIoRead( Slot->Fd, Buf + Got, Size - Got );
+		if( N <= 0 ) break;
+		Got += N;
+	}
+	Slot->KernelPos = Got;
+	++GPspFileRefills; GPspFileRefillBytes += Got;
+	GPspFileIoCycles += (DWORD)( appCycles() - C0 );
+	if( Got != Size )
+	{
+		free( Buf );
+		return;
+	}
+	Slot->Whole = Buf; Slot->WholeSize = Size;
+	debugf( NAME_Log, "PSPLOAD: cached %s (%i KB)", Slot->Path, Size / 1024 );
+	++GPspLoadCacheFiles; GPspLoadCacheKB += Size / 1024;
+	// the kernel handle is not needed while the file is in memory
+	sceIoClose( Slot->Fd ); Slot->Fd = -1;
+}
+CORE_API void appPspLoadCacheBegin()
+{
+	GPspLoadCache = 1;
+	GPspLoadCacheFiles = 0; GPspLoadCacheKB = 0;
+	for( INT i = 0; i < PSP_MAX_FILES; i++ )
+		if( GPspFiles[i].InUse && !GPspFiles[i].Whole )
+			PspWholeLoad( &GPspFiles[i] );
+}
+CORE_API void appPspLoadCacheEnd( INT& Files, INT& KB )
+{
+	GPspLoadCache = 0;
+	Files = GPspLoadCacheFiles; KB = GPspLoadCacheKB;
+	for( INT i = 0; i < PSP_MAX_FILES; i++ )
+	{
+		FPspFile* Slot = &GPspFiles[i];
+		for( INT w = 1; w < PSP_FILE_WINDOWS; ++w )   // back to one window per file while playing
+			if( Slot->Win[w].Buf ) { free( Slot->Win[w].Buf ); Slot->Win[w].Buf = NULL; Slot->Win[w].Len = 0; }
+	}
+	for( INT i = 0; i < PSP_MAX_FILES; i++ )
+		if( GPspFiles[i].Whole )
+		{
+			free( GPspFiles[i].Whole );
+			GPspFiles[i].Whole = NULL; GPspFiles[i].WholeSize = 0;
+		}
+}
 
 #endif
 
@@ -985,16 +1091,19 @@ CORE_API FILE* appFopen( const char* Path, const char* Mode )
 	Slot->Flags     = PspFlags;
 	Slot->LastUse   = ++GPspUseTick;
 	Slot->Error     = 0;
-	Slot->Buffer    = NULL;
-	Slot->BufBase   = 0;
-	Slot->BufLen    = 0;
+	for( INT w = 0; w < PSP_FILE_WINDOWS; ++w ) { Slot->Win[w].Buf = NULL; Slot->Win[w].Base = 0; Slot->Win[w].Len = 0; Slot->Win[w].Use = 0; }
+	Slot->LastWin   = 0;
 	Slot->FilePos   = 0;
 	Slot->KernelPos = 0;
+	Slot->Whole     = NULL;
+	Slot->WholeSize = 0;
 	if( PspFlags & PSP_O_APPEND )
 	{
 		INT End = (INT)sceIoLseek32( Fd, 0, PSP_SEEK_END );
 		Slot->FilePos = Slot->KernelPos = End < 0 ? 0 : End;
 	}
+	if( GPspLoadCache && PspFlags == PSP_O_RDONLY )
+		PspWholeLoad( Slot );
 	return (FILE*)Slot;
 #else
 	FILE* F = fopen( Path, Mode );
@@ -1067,12 +1176,13 @@ CORE_API INT appFclose( FILE* Stream )
 		sceIoClose( Slot->Fd );
 	Slot->Fd    = -1;
 	Slot->InUse = 0;
-	if( Slot->Buffer )
+	for( INT w = 0; w < PSP_FILE_WINDOWS; ++w )
+		if( Slot->Win[w].Buf ) { free( Slot->Win[w].Buf ); Slot->Win[w].Buf = NULL; Slot->Win[w].Len = 0; }
+	if( Slot->Whole )
 	{
-		free( Slot->Buffer );
-		Slot->Buffer = NULL;
+		free( Slot->Whole );
+		Slot->Whole = NULL; Slot->WholeSize = 0;
 	}
-	Slot->BufLen = 0;
 	return 0;
 #else
 	return fclose(Stream);
@@ -1088,6 +1198,8 @@ CORE_API INT appFseek( FILE* Stream, INT Offset, INT Origin )
 	INT NewPos;
 	if( Origin == SEEK_CUR )
 		NewPos = Slot->FilePos + Offset;
+	else if( Origin == SEEK_END && Slot->Whole )
+		NewPos = Slot->WholeSize + Offset;
 	else if( Origin == SEEK_END )
 	{
 		if( PspEnsureOpen( Slot ) < 0 )
@@ -1130,7 +1242,7 @@ CORE_API INT appFwrite( const void* Buffer, INT Size, INT Count, FILE* Stream )
 		return 0;
 	// Writes go straight through: they are the log and the ini, where being
 	// durable matters more than being fast. Any read window is now stale.
-	Slot->BufLen = 0;
+	for( INT w = 0; w < PSP_FILE_WINDOWS; ++w ) Slot->Win[w].Len = 0;
 	if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
 		return 0;
 	int Wrote = sceIoWrite( Slot->Fd, Buffer, Size*Count );
@@ -1161,39 +1273,50 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 	BYTE* Out  = (BYTE*)Buffer;
 	INT   Got  = 0;
 
+	if( Slot->Whole )
+	{
+		if( Slot->FilePos < 0 || Slot->FilePos >= Slot->WholeSize )
+			return 0;
+		const INT N = Min( Want, Slot->WholeSize - Slot->FilePos );
+		appMemcpy( Out, Slot->Whole + Slot->FilePos, N );
+		Slot->FilePos += N;
+		return N / Size;
+	}
+	static INT UseTick = 0;
 	while( Want > 0 )
 	{
-		// Serve whatever the current window covers.
-		if( Slot->BufLen > 0
-		&&  Slot->FilePos >= Slot->BufBase
-		&&  Slot->FilePos <  Slot->BufBase + Slot->BufLen )
+		// Serve from whichever window covers the position.
+		INT Hit = -1;
+		for( INT w = 0; w < PSP_FILE_WINDOWS; ++w )
 		{
-			INT Avail = Slot->BufBase + Slot->BufLen - Slot->FilePos;
+			const FPspFile::FWin& W = Slot->Win[w];
+			if( W.Len > 0 && Slot->FilePos >= W.Base && Slot->FilePos < W.Base + W.Len ) { Hit = w; break; }
+		}
+		if( Hit >= 0 )
+		{
+			FPspFile::FWin& W = Slot->Win[Hit];
+			INT Avail = W.Base + W.Len - Slot->FilePos;
 			INT N     = Avail < Want ? Avail : Want;
-			appMemcpy( Out, Slot->Buffer + (Slot->FilePos - Slot->BufBase), N );
+			appMemcpy( Out, W.Buf + (Slot->FilePos - W.Base), N );
 			Out += N; Slot->FilePos += N; Want -= N; Got += N;
+			W.Use = ++UseTick;
 			continue;
 		}
-
 		// sceIoRead DMAs into the destination and the PSP's data cache is not
 		// coherent with that, so the driver only gets pointers we control:
 		// a 64-byte aligned buffer of our own, or a caller buffer that happens
-		// to be 64-byte aligned already. Everything else is staged through the
+		// to be 64-byte aligned already. Everything else is staged through a
 		// window. newlib's fread did this implicitly via its own aligned
 		// buffer; reading straight into live object memory is what broke it.
 		// PPSSPP cannot show this up -- it implements sceIoRead as a memcpy.
 		const UBOOL bOutAligned = ( ( (size_t)Out & 63 ) == 0 );
-		if( ( Want >= PSP_FILE_BUFSZ && bOutAligned ) || !Slot->Buffer )
+		if( Want >= PSP_FILE_BUFSZ && bOutAligned )
 		{
-			if( !Slot->Buffer )
-			{
-				Slot->Buffer = (BYTE*)memalign( 64, PSP_FILE_BUFSZ );
-				if( Slot->Buffer )
-					continue;	// allocated; go round and fill it
-			}
 			if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
 				break;
+			const DWORD C0 = appCycles();
 			int N = sceIoRead( Slot->Fd, Out, Want );
+			GPspFileIoCycles += (DWORD)( appCycles() - C0 );
 			if( N <= 0 )
 			{
 				if( N < 0 )
@@ -1203,17 +1326,16 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 			Out += N; Slot->FilePos += N; Slot->KernelPos += N; Want -= N; Got += N;
 			continue;
 		}
-
-		// Refill the window at the current position. Adaptive size: the
-		// hardware profile showed package loading during play (the linker
-		// seeking from export to export) paying for a full 16KB Memory Stick
-		// read per seek to serve a few bytes -- 24% of the frame. So a refill
-		// that does not continue the previous window starts small and only
-		// grows while the reads stay sequential.
-		const UBOOL bSequential = Slot->BufLen > 0 && Slot->FilePos == Slot->BufBase + Slot->BufLen;
-		// The first refill after a seek is tunable for a hardware A/B: the
-		// Memory Stick's per-read latency may make fewer, larger reads cheaper
-		// than the 2KB start that minimised bytes. -REFILLKB=N (2..16).
+		// Refill a window at the current position: the least recently used
+		// one, or an unallocated one (during play only the first exists, see
+		// appPspLoadCacheEnd). Adaptive size: the hardware profile showed
+		// package loading during play (the linker seeking from export to
+		// export) paying for a full 16KB Memory Stick read per seek to serve
+		// a few bytes -- 24% of the frame. So a refill that does not continue
+		// the previous window starts small and only grows while the reads
+		// stay sequential.
+		const FPspFile::FWin& Last = Slot->Win[Slot->LastWin];
+		const UBOOL bSequential = Last.Len > 0 && Slot->FilePos == Last.Base + Last.Len;
 		static INT MinRefill = -1;
 		if( MinRefill < 0 )
 		{
@@ -1225,20 +1347,37 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 			Slot->NextRefill = Min( Slot->NextRefill * 2, (INT)PSP_FILE_BUFSZ );
 		else
 			Slot->NextRefill = MinRefill;
+		INT Victim = -1;
+		const INT MaxWin = GPspLoadCache ? PSP_FILE_WINDOWS : 1;
+		for( INT w = 0; w < MaxWin; ++w )
+		{
+			if( !Slot->Win[w].Buf ) { Victim = w; break; }
+			if( Victim < 0 || Slot->Win[w].Use < Slot->Win[Victim].Use ) Victim = w;
+		}
+		FPspFile::FWin& W = Slot->Win[Victim];
+		if( !W.Buf )
+		{
+			W.Buf = (BYTE*)memalign( 64, PSP_FILE_BUFSZ );
+			if( !W.Buf ) { Slot->Error = 1; break; }
+		}
 		if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
 			break;
-		int N = sceIoRead( Slot->Fd, Slot->Buffer, Slot->NextRefill );
+		const DWORD C0 = appCycles();
+		int N = sceIoRead( Slot->Fd, W.Buf, Slot->NextRefill );
+		GPspFileIoCycles += (DWORD)( appCycles() - C0 );
 		++GPspFileRefills;
 		if( N > 0 ) GPspFileRefillBytes += N;
 		if( N <= 0 )
 		{
 			if( N < 0 )
 				Slot->Error = 1;
-			Slot->BufLen = 0;
+			W.Len = 0;
 			break;
 		}
-		Slot->BufBase    = Slot->FilePos;
-		Slot->BufLen     = N;
+		W.Base = Slot->FilePos;
+		W.Len  = N;
+		W.Use  = ++UseTick;
+		Slot->LastWin    = Victim;
 		Slot->KernelPos += N;
 	}
 	return Got / Size;

@@ -569,14 +569,22 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 	debugf( NAME_Log, "LoadMap: %s", *Str );
 #ifdef __PSP__
 	const DOUBLE PspLoadStart = appSeconds();
+	appPspLoadCacheBegin();   // packages read whole while the load runs (UnFile.cpp)
 	// [PSP] MemDump=1 lists every object class with its memory after the
 	// load, while memory is still available to print with.
-	struct FPspLoadTimer { DOUBLE T0; const char* Map; UGameEngine* Engine; ~FPspLoadTimer()
+	extern CORE_API INT GPspFileRefills, GPspFileRefillBytes, GPspFileSeeks, GPspFileReopens;
+	extern CORE_API SQWORD GPspFileIoCycles;
+	struct FPspLoadTimer { DOUBLE T0; const char* Map; UGameEngine* Engine;
+		INT Refills0 = GPspFileRefills, Bytes0 = GPspFileRefillBytes, Seeks0 = GPspFileSeeks, Reopens0 = GPspFileReopens; SQWORD Io0 = GPspFileIoCycles;
+	~FPspLoadTimer()
 	{
 		ULevel* L = Engine->GLevel; INT NullActors = 0;
 		PspPrefetchLevel( L );
+		INT CacheFiles = 0, CacheKB = 0; appPspLoadCacheEnd( CacheFiles, CacheKB );
 		if( L ) for( INT i = 0; i < L->Num(); ++i ) if( !L->Actors(i) ) ++NullActors;
-		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s; actors %i (%i null)", Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState(), L ? L->Num() : 0, NullActors );
+		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s; actors %i (%i null); stick: %i refills %i KB, %.1f s in read/seek/open, %i seeks, %i reopens; %i files (%i KB) read whole",
+			Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState(), L ? L->Num() : 0, NullActors,
+			GPspFileRefills - Refills0, ( GPspFileRefillBytes - Bytes0 ) / 1024, (FLOAT)( GSecondsPerCycle * (DOUBLE)( GPspFileIoCycles - Io0 ) ), GPspFileSeeks - Seeks0, GPspFileReopens - Reopens0, CacheFiles, CacheKB );
 		INT Dump = 0; GetConfigInt( "PSP", "MemDump", Dump );
 		if( Dump )
 		{

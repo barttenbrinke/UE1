@@ -397,6 +397,8 @@ CORE_API extern INT GPspSwapWaitUs;
 CORE_API const char* appPspHeapState();
 CORE_API INT appPspArenaKB();
 CORE_API INT appPspHeapUsedKB();
+CORE_API void appPspLoadCacheBegin();
+CORE_API void appPspLoadCacheEnd( INT& Files, INT& KB );
 CORE_API void appPspDumpBigBlocks( INT Top );
 CORE_API extern INT GPspMeshReloadKB;   // mesh render data brought back by UMesh::GetFrame (never re-freed yet)
 // Non-zero while appReloadObject() re-serialises an object: loaders that

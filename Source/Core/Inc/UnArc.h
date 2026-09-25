@@ -72,6 +72,7 @@ public:
 	UBOOL ForClient()	{return ArForClient;}
 	UBOOL ForServer()	{return ArForServer;}
 	virtual INT Tell()	{return -1;}
+	virtual UBOOL Skip( INT Count ) {return 0;}   // seek past Count bytes without reading them (file loaders); 0 = unsupported
 
 	// Friend archivers.
 	friend FArchive& operator<<( FArchive& Ar, BYTE& B )

@@ -173,6 +173,22 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       priority sound when voices run out) took it to 7.5% and the match
       to 27.3 fps mean, worst 14.8. Sixteen voices not yet judged by
       ear (ambient-heavy levels may lose sounds).
+      Level load time (Entry 19 s, DmRadikus 23 s on the card). The load
+      line now reports stick traffic: an Entry load made 6274 reads with
+      5710 seeks for ~5 MB of package data -- the loader visits objects on
+      demand and jumps around the 37 MB UnrealI.u, so one 16 KB window
+      thrashed, and every texel/sample/mesh byte was read only to be
+      dropped. Three changes (all emulator-verified, hardware pending):
+      files under `[PSP] LoadCacheMB` (2) are read whole while a load runs
+      (under a `LoadCacheHeapMB` 30 guard; the first version at 8 MB / 38
+      MB pushed the emulator into out-of-memory), four LRU read windows
+      per file during loads (one while playing), and the texture, sound
+      and mesh serialisers now Skip() past data they would drop instead
+      of reading it (FArchive::Skip, a seek in the file loader). Emulator
+      counts: DmRadikus 7764 reads / 38.6 MB -> 3775 reads / 16.7 MB;
+      Entry 6274 / 17 MB -> 1930 / 6.8 MB. The remaining seeks are the
+      objects themselves (UnrealI.u); `-REFILLKB` is still the lever to
+      A/B on hardware.
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.

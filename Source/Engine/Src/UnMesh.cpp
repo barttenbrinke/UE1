@@ -37,8 +37,39 @@ void UMesh::Serialize( FArchive& Ar )
 	UPrimitive::Serialize(Ar);
 
 	// Serialize this.
+#ifdef __PSP__
+	// Render data is not read at all on the console when it is going to be
+	// dropped anyway (see below): the loader seeks past the arrays. Element
+	// sizes on disk: FMeshVert 4, FMeshTri 20, FMeshVertConnect 8, INT 4.
+	static INT SkipData = -1;
+	if( SkipData < 0 ) { SkipData = 1; GetConfigInt( "PSP", "FreeMeshData", SkipData ); }
+	const UBOOL SkipArrays = SkipData && Ar.IsLoading() && !GPspReloading && GetLinker();
+	#define PSP_SKIP_ARRAY( Arr, ElemBytes ) \
+	{ \
+		INT Num = 0; Ar << AR_INDEX(Num); \
+		if( Num > 0 && !Ar.Skip( Num * (ElemBytes) ) ) { Arr.Empty(); Arr.Add( Num ); for( INT k=0; k<Num; k++ ) Ar << Arr(k); } \
+		Arr.Empty(); \
+	}
+	if( SkipArrays )
+	{
+		PSP_SKIP_ARRAY( Verts, 4 );
+		PSP_SKIP_ARRAY( Tris, 20 );
+		Ar << AnimSeqs;
+		PSP_SKIP_ARRAY( Connects, 8 );
+		Ar << BoundingBox << BoundingSphere;
+		PSP_SKIP_ARRAY( VertLinks, 4 );
+		Ar << Textures;
+	}
+	else
+	{
+		Ar << Verts << Tris << AnimSeqs;
+		Ar << Connects << BoundingBox << BoundingSphere << VertLinks << Textures;
+	}
+	#undef PSP_SKIP_ARRAY
+#else
 	Ar << Verts << Tris << AnimSeqs;
 	Ar << Connects << BoundingBox << BoundingSphere << VertLinks << Textures;
+#endif
 	Ar << BoundingBoxes << BoundingSpheres;
 	Ar << FrameVerts << AnimFrames;
 	Ar << AndFlags << OrFlags;

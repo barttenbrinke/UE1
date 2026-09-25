@@ -257,6 +257,11 @@ public:
 		File = NULL;
 		unguard;
 	}
+	UBOOL Skip( INT Count )
+	{
+		Seek( Pos + Count );
+		return 1;
+	}
 	void Seek( INT InPos, INT InReadAhead=0 )
 	{
 		guard(FArchiveFileLoad::Seek);

@@ -302,32 +302,47 @@ void UTexture::Serialize( FArchive& Ar )
 	if( (Ar.IsSaving() || Ar.IsLoading()) && (TextureFlags & TF_Parametric) )
 		for( INT i=0; i<Mips.Num(); i++ )
 			Mips(i).DataArray.Empty();
-	Ar << Mips;
-	if( (Ar.IsSaving() || Ar.IsLoading()) && (TextureFlags & TF_Parametric) )
-		for( INT i=0; i<Mips.Num(); i++ )
-			Mips(i).DataArray.AddZeroed( Mips(i).USize * Mips(i).VSize );
 #ifdef __PSP__
-	// Package textures do not keep their texels in RAM on the console. They
-	// are dropped here, as they load, because PostLoad only runs once the
-	// whole package batch is in and the peak is during the batch (a
+	// Package textures do not keep their texels in RAM on the console, and
+	// they are not even read: the loader seeks past each mip's bytes (Skip),
+	// which took tens of MB of Memory Stick traffic out of every level load.
+	// PostLoad would be too late (the peak is during the package batch: a
 	// deathmatch map peaked at 45 MB against the PSP's ~38). The render
 	// device re-reads them through appReloadObject() when it first uploads
 	// the texture -- GPspReloading marks that pass so they survive it -- and
 	// frees them again afterwards. Realtime and parametric textures keep
 	// their data.
 	//   [PSP] FreeTextureData=1
-	if( Ar.IsLoading() && !GPspReloading && GetLinker() && !( TextureFlags & ( TF_Realtime | TF_Parametric | TF_PspPinned ) ) )
+	static INT FreeData = -1;
+	if( FreeData < 0 ) { FreeData = 1; GetConfigInt( "PSP", "FreeTextureData", FreeData ); }
+	const UBOOL SkipTexels = FreeData && Ar.IsLoading() && !GPspReloading && GetLinker() && !( TextureFlags & ( TF_Realtime | TF_Parametric | TF_PspPinned ) );
+	if( SkipTexels )
 	{
-		static INT FreeData = -1;
-		if( FreeData < 0 ) { FreeData = 1; GetConfigInt( "PSP", "FreeTextureData", FreeData ); }
-		if( FreeData )
-			for( INT i=0; i<Mips.Num(); i++ )
+		// TArray<FMipmap>: count, then per mip its byte array (count + bytes) and sizes
+		Mips.Empty();
+		INT Num = 0;
+		Ar << AR_INDEX(Num);
+		for( INT i=0; i<Num; i++ )
+		{
+			FMipmap& M = *new(Mips)FMipmap;
+			INT Bytes = 0;
+			Ar << AR_INDEX(Bytes);
+			if( Bytes > 0 && !Ar.Skip( Bytes ) )
 			{
-				Mips(i).DataArray.Empty();   // Remove() with Num 0 releases the allocation
-				Mips(i).DataPtr = NULL;
+				M.DataArray.Add( Bytes );   // archive cannot seek: read and drop
+				Ar.Serialize( &M.DataArray(0), Bytes );
+				M.DataArray.Empty();
 			}
+			Ar << M.USize << M.VSize << M.UBits << M.VBits;
+			M.DataPtr = NULL;
+		}
 	}
+	else
 #endif
+	Ar << Mips;
+	if( (Ar.IsSaving() || Ar.IsLoading()) && (TextureFlags & TF_Parametric) )
+		for( INT i=0; i<Mips.Num(); i++ )
+			Mips(i).DataArray.AddZeroed( Mips(i).USize * Mips(i).VSize );
 	if( Ar.Ver() <= 38 )//oldver
 	{
 		UClamp = USize;
