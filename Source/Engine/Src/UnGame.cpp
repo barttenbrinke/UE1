@@ -492,6 +492,73 @@ static void PspReloadFreedForSave( UObject* Package )
 }
 #endif
 
+#ifdef __PSP__
+// Lazily freed mesh and texture data comes back from the memory stick the
+// first time it is drawn: dropping into a new room stalls the frame for the
+// reads. Now that a level loads at 17-30 MB, bring the level's own meshes
+// and textures back right after the load while the heap stays under
+// [PSP] PrefetchHeapMB. Sounds stay lazy (small reads).
+static UBOOL PspPrefetchTexture( UTexture* T, INT& Count, INT Limit )
+{
+	for( INT Hop = 0; T && Hop < 64; T = T->AnimNext, ++Hop )
+	{
+		if( !T->Mips.Num() || T->Mips(0).DataArray.Num() || !T->GetLinker() )
+			continue;
+		if( appPspHeapUsedKB() >= Limit )
+			return 0;
+		if( PspEnsureTexels( T ) )
+			++Count;
+	}
+	return 1;
+}
+static void PspPrefetchLevel( ULevel* Level )
+{
+	guard(PspPrefetchLevel);
+	static INT LimitMB = -1;
+	if( LimitMB < 0 ) { LimitMB = 30; GetConfigInt( "PSP", "PrefetchHeapMB", LimitMB ); }
+	if( !Level || LimitMB <= 0 )
+		return;
+	const INT Limit = LimitMB * 1024;
+	const INT Start = appPspHeapUsedKB();
+	INT Meshes = 0, Textures = 0; UBOOL Room = 1;
+	for( INT i = 0; i < Level->Num() && Room; i++ )
+	{
+		AActor* A = Level->Actors(i);
+		if( !A || !A->Mesh || A->Mesh->Verts.Num() )
+			continue;
+		if( appPspHeapUsedKB() >= Limit ) { Room = 0; break; }
+		if( A->Mesh->PspPrefetch() )
+			++Meshes;
+	}
+	// then every other mesh: bots, weapons and projectiles are spawned by
+	// class later, so the actor list above covers only pickups and decor
+	for( TObjectIterator<UMesh> It; It && Room; ++It )
+	{
+		if( It->Verts.Num() || It->FrameVerts <= 0 )
+			continue;
+		if( appPspHeapUsedKB() >= Limit ) { Room = 0; break; }
+		if( It->PspPrefetch() )
+			++Meshes;
+	}
+	const INT AfterMeshes = appPspHeapUsedKB();
+	if( Room && Level->Model && Level->Model->Surfs )
+		for( INT i = 0; i < Level->Model->Surfs->Num() && Room; i++ )
+			Room = PspPrefetchTexture( Level->Model->Surfs->Element(i).Texture, Textures, Limit );
+	for( INT i = 0; i < Level->Num() && Room; i++ )
+	{
+		AActor* A = Level->Actors(i);
+		if( !A ) continue;
+		Room = PspPrefetchTexture( A->Texture, Textures, Limit ) && PspPrefetchTexture( A->Skin, Textures, Limit );
+		if( Room && A->Mesh )
+			for( INT j = 0; j < A->Mesh->Textures.Num() && Room; j++ )
+				Room = PspPrefetchTexture( A->Mesh->Textures(j), Textures, Limit );
+	}
+	debugf( NAME_Log, "PSPPERF: prefetched %i meshes (%i KB) and %i textures (%i KB)%s; heap used %i KB, limit %i MB",
+		Meshes, AfterMeshes - Start, Textures, appPspHeapUsedKB() - AfterMeshes, Room ? "" : " -- stopped at the limit", appPspHeapUsedKB(), LimitMB );
+	unguard;
+}
+#endif
+
 ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Error256 )
 {
 	guard(UGameEngine::LoadMap);
@@ -507,6 +574,7 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 	struct FPspLoadTimer { DOUBLE T0; const char* Map; UGameEngine* Engine; ~FPspLoadTimer()
 	{
 		ULevel* L = Engine->GLevel; INT NullActors = 0;
+		PspPrefetchLevel( L );
 		if( L ) for( INT i = 0; i < L->Num(); ++i ) if( !L->Actors(i) ) ++NullActors;
 		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s; actors %i (%i null)", Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState(), L ? L->Num() : 0, NullActors );
 		INT Dump = 0; GetConfigInt( "PSP", "MemDump", Dump );

@@ -100,7 +100,8 @@ LightGamma=210    ; lightmap curve %, 100 = linear; lifts dark areas without sat
 VertexArrays=1    ; 0 = stock immediate-mode renderer (bisect switch)
 TextureBudgetMB=8 ; resident GL texture memory before least-recently-used eviction; the heap is ~38MB and Unreal's own data takes ~26MB
 SoundBudgetKB=2048 ; resident OpenAL sample memory; least recently played sounds are unregistered past this
-MeshBudgetKB=1024  ; reloaded mesh render data; meshes not drawn for 2 s are dropped past this
+MeshBudgetKB=8192  ; reloaded mesh render data; meshes not drawn for 2 s are dropped past this
+PrefetchHeapMB=30  ; after a level loads, reload its meshes and textures from the stick until the heap reaches this (no first-draw stalls)
 PSPCFG
 fi
 

@@ -139,6 +139,7 @@ class ENGINE_API UMesh : public UPrimitive
 	DECLARE_CLASS_WITHOUT_CONSTRUCT(UMesh,UPrimitive,0)
 #ifdef __PSP__
 	void Destroy();   // drops this mesh from the resident render-data cap
+	UBOOL PspPrefetch();   // reload freed render data now (level load), counted in the resident cap
 #endif
 
 	// Objects.

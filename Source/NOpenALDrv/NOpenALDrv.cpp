@@ -58,6 +58,73 @@ static UBOOL  GPspMusStreaming = 0;
 //   [PSP] MusicMEStereo=1  ; stereo at 44100 straight into the channel (else mono, upsampled)
 //
 #include <me-core-mapper/me-core.h>   // defines the ME entry glue: include from ONE file only
+// libxmp's player state lives in the heap and is written by the Media
+// Engine, which has its own data cache. A 64-byte line holding the end of
+// a libxmp block and the start of a neighbouring CPU block gets written
+// back from the ME with stale neighbour bytes: heap-header and small-object
+// corruption that surfaced as crashes in mallinfo, _free_r and pspgl's
+// texture free (a save load without ME music went through cleanly). So
+// every allocation libxmp makes gets its own 64-byte aligned, 64-byte
+// padded block: the ME never shares a cache line with anything else. The
+// link wraps the public malloc/calloc/realloc/free (Source/Unreal/
+// CMakeLists.txt) -- not newlib's _*_r internals, whose own calloc/realloc
+// expect real chunks back from _malloc_r. The flag routes allocations while
+// libxmp runs on the CPU (context creation, module load, player start);
+// frees and reallocs recognise the header.
+static volatile INT GPspXmpAlloc = 0;
+struct FPspXmpScope { FPspXmpScope() { ++GPspXmpAlloc; } ~FPspXmpScope() { --GPspXmpAlloc; } };
+struct FPspMeHdr { u32 Magic0, Magic1; void* Raw; u32 Size; };
+enum { PSP_ME_MAGIC0 = 0x4D454C4E, PSP_ME_MAGIC1 = 0x584D5041 };
+extern "C" void* __real_malloc( size_t );
+extern "C" void  __real_free( void* );
+extern "C" void* __real_realloc( void*, size_t );
+extern "C" void* __real_calloc( size_t, size_t );
+static void* PspMeAlloc( size_t N )
+{
+	const size_t Pay = ( N + 63 ) & ~(size_t)63;
+	char* Raw = (char*)__real_malloc( Pay + 64 + 63 );
+	if( !Raw ) return NULL;
+	char* P = (char*)( ( (u32)Raw + 63 + 64 ) & ~63u );
+	FPspMeHdr* H = (FPspMeHdr*)( P - 64 );
+	H->Magic0 = PSP_ME_MAGIC0; H->Magic1 = PSP_ME_MAGIC1; H->Raw = Raw; H->Size = (u32)N;
+	return P;
+}
+static inline FPspMeHdr* PspMeHdr( void* P )
+{
+	if( !P || ( (u32)P & 63 ) || (u32)P < 0x08800000 + 64 ) return NULL;
+	FPspMeHdr* H = (FPspMeHdr*)( (char*)P - 64 );
+	return ( H->Magic0 == PSP_ME_MAGIC0 && H->Magic1 == PSP_ME_MAGIC1 ) ? H : NULL;
+}
+extern "C" void* __wrap_malloc( size_t N )
+{
+	return GPspXmpAlloc ? PspMeAlloc( N ) : __real_malloc( N );
+}
+extern "C" void* __wrap_calloc( size_t N, size_t M )
+{
+	if( !GPspXmpAlloc ) return __real_calloc( N, M );
+	void* P = PspMeAlloc( N * M );
+	if( P ) memset( P, 0, N * M );
+	return P;
+}
+extern "C" void __wrap_free( void* P )
+{
+	FPspMeHdr* H = PspMeHdr( P );
+	if( H ) { H->Magic0 = 0; __real_free( H->Raw ); }
+	else __real_free( P );
+}
+extern "C" void* __wrap_realloc( void* P, size_t N )
+{
+	FPspMeHdr* H = PspMeHdr( P );
+	if( !H )
+		return ( !P && GPspXmpAlloc ) ? PspMeAlloc( N ) : __real_realloc( P, N );   // a plain block stays plain
+	if( !N ) { __wrap_free( P ); return NULL; }
+	void* Q = PspMeAlloc( N );
+	if( !Q ) return NULL;
+	memcpy( Q, P, H->Size < N ? H->Size : N );
+	__wrap_free( P );
+	return Q;
+}
+
 enum { PSP_ME_BLOCKS = 8 };
 struct FPspMeShared
 {
@@ -496,6 +563,7 @@ UNOpenALAudioSubsystem::UNOpenALAudioSubsystem()
 
 UBOOL UNOpenALAudioSubsystem::Init()
 {
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
 	guard(UNOpenALAudioSubsystem::Init)
 
 	Viewport = NULL;
@@ -624,6 +692,7 @@ UBOOL UNOpenALAudioSubsystem::Init()
 
 void UNOpenALAudioSubsystem::Destroy()
 {
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
 	guard(UNOpenALAudioSubsystem::Destroy)
 
 	StopMusicThread();
@@ -677,6 +746,7 @@ void UNOpenALAudioSubsystem::Destroy()
 
 void UNOpenALAudioSubsystem::ShutdownAfterError()
 {
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
 	guard(UNOpenALAudioSubsystem::Destroy)
 
 	StopMusicThread();
@@ -717,6 +787,7 @@ void UNOpenALAudioSubsystem::ShutdownAfterError()
 
 void UNOpenALAudioSubsystem::PostEditChange()
 {
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
 	guard(UNOpenALAudioSubsystem::PostEditChange)
 
 	Super::PostEditChange();
@@ -772,6 +843,7 @@ void UNOpenALAudioSubsystem::SetViewport( UViewport* InViewport )
 
 void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 {
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
 	guard(UNOpenALAudioSubsystem::RegisterMusic)
 
 	FScopedLock Lock( MusicMutex );
@@ -837,6 +909,7 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 
 void UNOpenALAudioSubsystem::UnregisterMusic( UMusic* Music )
 {
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
 	guard(UNOpenALAudioSubsystem::UnregisterMusic)
 
 	FScopedLock Lock( MusicMutex );
@@ -1641,6 +1714,7 @@ void UNOpenALAudioSubsystem::InitReverbEffect()
 
 UBOOL UNOpenALAudioSubsystem::Exec( const char* Cmd, FOutputDevice* Out )
 {
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
 	guard(UNOpenALAudioSubsystem::Exec)
 
 	if( ParseCommand( &Cmd, "MusicOrder") )

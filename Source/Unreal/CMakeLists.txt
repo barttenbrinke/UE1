@@ -92,6 +92,8 @@ if(PSP)
     psphprm pspctrl psppower psprtc
     stdc++ m
   )
+  # libxmp memory must not share cache lines with the CPU heap (Media Engine); NOpenALDrv wraps the newlib allocator entry points
+  target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=malloc,--wrap=free,--wrap=realloc,--wrap=calloc)
   if(PSP_GPROF)
     target_link_libraries(${PROJECT_NAME} pspprof)
     target_link_options(${PROJECT_NAME} PRIVATE -pg)

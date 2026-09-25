@@ -167,7 +167,7 @@ static void PspMeshTouch( UMesh* Mesh )
 }
 static void PspMeshResident( UMesh* Mesh, INT Bytes )
 {
-	if( GPspMeshBudgetKB < 0 ) { GPspMeshBudgetKB = 1024; GetConfigInt( "PSP", "MeshBudgetKB", GPspMeshBudgetKB ); }
+	if( GPspMeshBudgetKB < 0 ) { GPspMeshBudgetKB = 8192; GetConfigInt( "PSP", "MeshBudgetKB", GPspMeshBudgetKB ); }
 	const DOUBLE Now = appSeconds();
 	FPspMeshRec Rec; Rec.Mesh = Mesh; Rec.Bytes = Bytes; Rec.LastUse = Now;
 	GPspMeshRecs.AddItem( Rec );
@@ -184,6 +184,19 @@ static void PspMeshResident( UMesh* Mesh, INT Bytes )
 		GPspMeshRecs.Remove( Best );
 		Victim->Verts.Empty(); Victim->Tris.Empty(); Victim->Connects.Empty(); Victim->VertLinks.Empty();
 	}
+}
+UBOOL UMesh::PspPrefetch()
+{
+	guard(UMesh::PspPrefetch);
+	if( Verts.Num() || FrameVerts <= 0 || !GetLinker() )
+		return 0;
+	if( !appReloadObject( this ) || !Verts.Num() )
+		return 0;
+	const INT Bytes = Verts.Num() * sizeof(FMeshVert) + Tris.Num() * sizeof(FMeshTri) + Connects.Num() * sizeof(FMeshVertConnect) + VertLinks.Num() * sizeof(INT);
+	GPspMeshReloadKB += Bytes / 1024;
+	PspMeshResident( this, Bytes );
+	return 1;
+	unguard;
 }
 void UMesh::Destroy()
 {
