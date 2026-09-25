@@ -102,6 +102,22 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       NyLeve 27.6 -> 22.1, DmRadikus 32.0 -> 17.0 (emulator, no ME
       music). Still unexplained: ~6 MB in 21 generic "FArray" blocks
       after a Chizra load; tagging those reallocs is the next diagnostic.
+      Level transitions (PPSSPP, `-MAPCYCLE=35`, three rounds over five
+      maps): no leak. Entry between maps settles at ~15.5 MB after the
+      game packages load once; the per-round creep is resident sounds
+      under their budget. The 556 KB "TArray<AActor*>" block is the BSP
+      light list (UModel::Lights), static data.
+      Save / load (PPSSPP, `-SAVETEST=25` on Dig): SaveGame 9 writes
+      ../Save/Save9.usa (4.9 MB), `START ?load=9` reloads it. Two fixes
+      on the way: embedded map objects whose data was lazily freed are
+      reloaded before SavePackage (else the save holds empty arrays), and
+      the old level is garbage-collected before the new package loads
+      (a save load or restart held both levels: transient peak 33.6 ->
+      31.5 MB on Dig; normal travel goes through Entry anyway). Note the
+      load= and hub Game%i.usa strings are URLs: FURL reads a forward
+      slash as a host separator, so they keep the backslash and the PSP
+      file layer converts it. Untested on hardware: saving to the memory
+      stick (appMkdir creates Save/), and the load peak on a big level.
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.

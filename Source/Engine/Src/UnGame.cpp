@@ -622,6 +622,14 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 			GObj.SavePackage( GLevel->GetParent(), GLevel, 0, Filename );
 		}
 		GLevel = NULL;
+#ifdef __PSP__
+		// The old level is otherwise collected only after the new one has
+		// loaded (end of LoadMap), so a save load or restart held two levels
+		// at once: 6.6 MB over the level's own size on Rrajigar Mine. Normal
+		// travel passes through Entry and is unaffected.
+		GObj.CollectGarbage( GSystem, RF_Intrinsic );
+		debugf( NAME_Log, "PSPPERF: old level released before load; %s", appPspHeapState() );
+#endif
 	}
 	unguard;
 
