@@ -841,7 +841,7 @@ enum
 {
 	PSP_MAX_FILES          = 96,     // logical slots: a level change keeps both levels' packages open (32 was hit by Vortex2 -- 'Error opening file')
 	PSP_FILE_BUFSZ         = 16384,
-	PSP_FILE_WINDOWS       = 4,      // read windows per file during a level load
+	PSP_FILE_WINDOWS       = 16,     // read windows per file during a level load (4: -9% reads, 16: -13%, 64: -22% vs one; diminishing)
 	PSP_FILE_MINREFILL     = 2048,    // first read after a seek; doubles while sequential
 	PSP_MAX_KERNEL_HANDLES = 6,
 };
