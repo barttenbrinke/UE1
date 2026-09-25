@@ -76,6 +76,12 @@ struct FPspMeShared
 static FPspMeShared* GPspMe = NULL;     // uncached alias
 static INT   GPspMeInit   = 0;          // 0 untried, 1 ready, -1 unavailable
 static UBOOL GPspMeActive = 0;          // current song renders on the ME
+static INT   GPspSndLog   = -1;         // -SNDLOG: trace effect playback (first calls only)
+static UBOOL PspSndLog()
+{
+	if( GPspSndLog < 0 ) GPspSndLog = ParseParam( appCmdLine(), "SNDLOG" ) ? 1 : 0;
+	return GPspSndLog != 0;
+}
 static INT   GPspMeRate   = 44100;
 static INT   GPspMeStereo = 1;
 
@@ -517,6 +523,16 @@ UBOOL UNOpenALAudioSubsystem::Init()
 	alListenerf( AL_GAIN, MasterVolume / 255.f );
 
 	alGenSources( MAX_SOURCES, Sources );
+#ifdef __PSP__
+	{
+		ALCint Freq = 0, Mono = 0, Stereo = 0;
+		alcGetIntegerv( Device, ALC_FREQUENCY, 1, &Freq );
+		alcGetIntegerv( Device, ALC_MONO_SOURCES, 1, &Mono );
+		alcGetIntegerv( Device, ALC_STEREO_SOURCES, 1, &Stereo );
+		debugf( NAME_Log, "PSPSND: device freq %d mono %d stereo %d sources %d alErr %04x alcErr %04x master %d sound %d music %d",
+			Freq, Mono, Stereo, MAX_SOURCES, alGetError(), alcGetError( Device ), MasterVolume, SoundVolume, MusicVolume );
+	}
+#endif
 
 	alGenSources( 1, &MusicSource	);
 	alSourcei( MusicSource, AL_SOURCE_RELATIVE, AL_TRUE );
@@ -872,6 +888,13 @@ void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 
 	Sound->Handle = (void*)Buf;
 	Sound->Looping = ( WaveInfo.SampleLoopsNum != 0 ); // the only indication of looping in this version of UE1
+#ifdef __PSP__
+	{
+		static INT Count = 0;
+		if( PspSndLog() && ++Count <= 8 )
+			debugf( NAME_Log, "PSPSND: registered %s buf %u fmt %04x bytes %u rate %u alErr %04x", Sound->GetName(), Buf, Format, (unsigned)WaveInfo.SampleDataSize, (unsigned)*WaveInfo.pSamplesPerSec, alGetError() );
+	}
+#endif
 
 	if( !GIsEditor )
 		Sound->Data.Empty();
@@ -978,7 +1001,19 @@ void UNOpenALAudioSubsystem::UpdateVoice( INT Num, const ENVoiceOp Op )
 	// Play or stop if needed.
 	switch( Op )
 	{
-		case ENVoiceOp::NVOP_Play:  alSourcePlay( Source ); break;
+		case ENVoiceOp::NVOP_Play:  alSourcePlay( Source );
+#ifdef __PSP__
+			{
+				static INT Count = 0;
+				if( PspSndLog() && ++Count <= 24 )
+				{
+					ALint State = 0, Buf = 0; ALfloat Gain = -1.f;
+					alGetSourcei( Source, AL_SOURCE_STATE, &State ); alGetSourcei( Source, AL_BUFFER, &Buf ); alGetSourcef( Source, AL_GAIN, &Gain );
+					debugf( NAME_Log, "PSPSND: voice %d src %u state %04x buf %d gain %.2f rel %d alErr %04x", Num, Source, State, Buf, Gain, (INT)SourceRelative, alGetError() );
+				}
+			}
+#endif
+			break;
 		case ENVoiceOp::NVOP_Pause: alSourcePause( Source ); break;
 		case ENVoiceOp::NVOP_Stop:  alSourceStop( Source ); break;
 		default: break;
@@ -1027,6 +1062,13 @@ UBOOL UNOpenALAudioSubsystem::PlaySound( AActor* Actor, INT Id, USound* Sound, F
 		appReloadObject( Sound );
 #endif
 	// If we ran out of voices or the sound is too low priority, bail.
+#ifdef __PSP__
+	{
+		static INT Count = 0;
+		if( PspSndLog() && ++Count <= 24 )
+			debugf( NAME_Log, "PSPSND: play %s handle %p voice %d vol %.2f radius %.0f data %d viewport %d", Sound ? Sound->GetName() : "NULL", Sound ? Sound->Handle : NULL, Voice ? (INT)(Voice - Voices) : -1, Volume, Radius, Sound ? Sound->Data.Num() : -1, Viewport != NULL );
+	}
+#endif
 	if( !Voice || !Sound || !Sound->Handle )
 		return false;
 

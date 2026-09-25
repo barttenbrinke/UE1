@@ -66,11 +66,24 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       loading itself -- my low-memory probe called mallinfo() on every
       large allocation and newlib's bin walk raced the mixer thread
       (fixed in 1b130a3, probe now opt-in). Card currently runs 7846f886
-      with the three Free*Data switches OFF in the ini; staged for the
-      next PSPLink session: card af288806 (fix + music bytes freed) with
-      the lazy-on ini. Then: level one, and a botmatch from the menu. Background: the 1998 engine leaned
-      on the PC's virtual memory; retail patches later added TLazyArray
-      for mips and sounds, which this source snapshot predates.
+      with the three Free*Data switches OFF in the ini. Reported on it:
+      music plays, sound effects (even menu clicks) are silent, and the
+      game crashed walking into the big room of level one (card run, so
+      the log is on the card: ms0:/PSP/GAME/Unreal/Unreal.log -- read it
+      first next session). The lazy-off registration path is upstream's
+      and the OpenAL PSP backend reserves its channel with
+      PSP_AUDIO_NEXT_CHANNEL (no clash with the Media Engine channel), so
+      the driver now has a `-SNDLOG` trace (device freq/sources, first
+      registrations, each PlaySound with handle/volume, source state and
+      alGetError after alSourcePlay). Next PSPLink session, in order:
+      1. card log; 2. `./Unreal.prx -SNDLOG` to the menu, then
+      `-SNDLOG -MUSICME=0` as the A/B; 3. push the staged EBOOT (mallinfo
+      fix + music bytes freed + trace) with the lazy-on ini; level one,
+      then a botmatch from the menu. LightGamma raised 170 -> 210 in the
+      installer and staged inis (shadow lift judged still too dark).
+      Background: the 1998 engine leaned on the PC's virtual memory;
+      retail patches later added TLazyArray for mips and sounds, which
+      this source snapshot predates.
 
 ## Rejected on hardware numbers (do not retry)
 
