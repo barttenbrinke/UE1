@@ -994,9 +994,14 @@ void UNOpenALAudioSubsystem::UpdateVoice( INT Num, const ENVoiceOp Op )
 	}
 
 	if( UseReverb && Op == NVOP_Play )
+	{
 #ifndef PSP_NO_EFX  // per-source reverb send
 		alSource3i( Source, AL_AUXILIARY_SEND_FILTER, (ALint)ReverbSlot, 0, AL_FILTER_NULL );
 #endif
+		// (with EFX compiled out this body is empty; without the braces the
+		// play/stop switch below became the if body and effects went silent
+		// whenever UseReverb was False)
+	}
 
 	// Play or stop if needed.
 	switch( Op )

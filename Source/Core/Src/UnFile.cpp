@@ -248,8 +248,15 @@ static void PspLowMemoryCheck( INT Size )
 	// Opt-in only (-MEMDUMP): mallinfo() walks the allocator's bins, and doing
 	// that on every large allocation while the mixer thread allocates too
 	// crashed inside __malloc_update_mallinfo on the console (null link).
+	// Large allocations happen before appInit() has a command line; do not
+	// latch the switch (or dereference NULL) until there is one.
 	static INT Enabled = -1;
-	if( Enabled < 0 ) Enabled = ParseParam( appCmdLine(), "MEMDUMP" ) ? 1 : 0;
+	if( Enabled < 0 )
+	{
+		const char* Cmd = appCmdLine();
+		if( !Cmd ) return;
+		Enabled = ParseParam( Cmd, "MEMDUMP" ) ? 1 : 0;
+	}
 	if( !Enabled || Size < 65536 ) return;
 	struct mallinfo M = mallinfo();
 	// The arena grows on demand inside the module's heap block, so "free
