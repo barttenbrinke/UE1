@@ -91,6 +91,17 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       under PSPLink (set InitialBots in the card ini, the URL takes no
       bot option) to get the real load figure with the ME music; the
       emulator's 32 MB after load excludes it.
+      Later levels on PPSSPP (idle at the start): Chizra and SkyTown
+      failed to load at 43-45 MB. A table of live blocks >= 64 KB
+      (printed after LoadMap with MemDump=1 and at out-of-memory) showed
+      ~300 uniform 64-75 KB blocks: UDatabase::Serialize restores the
+      editor's capacity (DbMax, grown by "256 + a quarter") for every
+      brush Polys and BSP table -- 19 MB of slack on Chizra. Allocating
+      the stored count instead (UnModel.cpp) gave, after load:
+      Chizra 44.8 -> 29.3 MB, SkyTown 42.9 -> 29.5, Dig 31.5 -> 26.4,
+      NyLeve 27.6 -> 22.1, DmRadikus 32.0 -> 17.0 (emulator, no ME
+      music). Still unexplained: ~6 MB in 21 generic "FArray" blocks
+      after a Chizra load; tagging those reallocs is the next diagnostic.
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.

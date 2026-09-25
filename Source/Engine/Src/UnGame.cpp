@@ -493,6 +493,7 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 			}
 			for( INT i=0; i<Tally.Num(); i++ ) for( INT j=i+1; j<Tally.Num(); j++ ) if( Tally(j).Bytes > Tally(i).Bytes ) Exchange( Tally(i), Tally(j) );
 			debugf( NAME_Log, "PSPMEM: %i objects, %i KB of instance memory (PropertiesSize)", Objects, Total / 1024 );
+			appPspDumpBigBlocks( 30 );
 			for( INT i=0; i<Min(Tally.Num(),20); i++ )
 				debugf( NAME_Log, "PSPMEM:   %-28s %6i objects %6i KB", Tally(i).Class ? Tally(i).Class->GetName() : "?", Tally(i).Count, Tally(i).Bytes / 1024 );
 		}

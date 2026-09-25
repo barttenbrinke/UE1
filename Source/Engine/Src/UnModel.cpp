@@ -46,7 +46,17 @@ void UDatabase::Serialize( FArchive& Ar )
 		DbMax = GObj.GetTempMax();
 	}
 	if( Ar.IsLoading() )
+	{
+#ifdef __PSP__
+		// The package stores the editor's capacity (DbMax) next to the count,
+		// and the editor grows by "256 + a quarter" -- so every brush's Polys
+		// carried 64 KB+ of slack: 19 MB of Chizra's 45 MB heap. Allocate
+		// the count; runtime growth (the brush tracker) still reallocs.
+		if( !GIsEditor )
+			DbMax = DbNum;
+#endif
 		Realloc();
+	}
 	SerializeData( Ar );
 	unguardf(( "(%i/%i)", DbNum, DbMax ));
 }

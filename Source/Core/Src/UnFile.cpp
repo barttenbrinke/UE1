@@ -234,11 +234,73 @@ CORE_API void appDumpAllocs( FOutputDevice* Out )
 // Runs once; it may itself need a little memory, and we are dying anyway.
 // Opt-in (-MEMDUMP on the command line): with the heap nearly gone the
 // listing itself has hung the emulator.
+// Live allocations of 64 KB and more, with the tag that made them. The
+// object tally ("OBJ LIST") counts serialised data only; on Chizra that
+// explained 12 MB of a 45 MB heap. Touched only for big blocks (free()
+// asks the chunk header for the size first), a spinlock covers the mixer
+// thread.
+struct FPspBigBlock { void* Ptr; INT Size; char Tag[40]; };
+enum { PSP_BIG_MIN = 65536, PSP_BIG_MAX = 768 };
+static FPspBigBlock GPspBig[PSP_BIG_MAX];
+static INT GPspBigNum = 0;
+static INT GPspBigDropped = 0;
+static volatile int GPspBigLock = 0;
+static inline void PspBigLock()   { while( __sync_lock_test_and_set( &GPspBigLock, 1 ) ) {} }
+static inline void PspBigUnlock() { __sync_lock_release( &GPspBigLock ); }
+static void PspBigAdd( void* Ptr, INT Size, const char* Tag )
+{
+	if( Size < PSP_BIG_MIN || !Ptr ) return;
+	PspBigLock();
+	if( GPspBigNum < PSP_BIG_MAX )
+	{
+		FPspBigBlock& B = GPspBig[GPspBigNum++];
+		B.Ptr = Ptr; B.Size = Size;
+		strncpy( B.Tag, Tag ? Tag : "?", sizeof(B.Tag) - 1 ); B.Tag[sizeof(B.Tag) - 1] = 0;
+	}
+	else ++GPspBigDropped;
+	PspBigUnlock();
+}
+static void PspBigRemove( void* Ptr )
+{
+	if( !Ptr || !GPspBigNum || malloc_usable_size( Ptr ) < PSP_BIG_MIN ) return;
+	PspBigLock();
+	for( INT i = 0; i < GPspBigNum; ++i )
+		if( GPspBig[i].Ptr == Ptr ) { GPspBig[i] = GPspBig[--GPspBigNum]; break; }
+	PspBigUnlock();
+}
+CORE_API void appPspDumpBigBlocks( INT Top )
+{
+	static FPspBigBlock Copy[PSP_BIG_MAX];   // static: 33 KB is too much for a PSP stack
+	PspBigLock();
+	const INT N = GPspBigNum;
+	appMemcpy( Copy, GPspBig, N * sizeof(FPspBigBlock) );
+	PspBigUnlock();
+	INT Total = 0;
+	for( INT i = 0; i < N; ++i ) Total += Copy[i].Size;
+	debugf( NAME_Log, "PSPMEM: %i live blocks >= 64 KB, %i KB total (%i not tracked)", N, Total / 1024, GPspBigDropped );
+	for( INT k = 0; k < Top && k < N; ++k )
+	{
+		INT Best = k;
+		for( INT j = k + 1; j < N; ++j ) if( Copy[j].Size > Copy[Best].Size ) Best = j;
+		FPspBigBlock T = Copy[k]; Copy[k] = Copy[Best]; Copy[Best] = T;
+		debugf( NAME_Log, "PSPMEM:   %6i KB  %s", Copy[k].Size / 1024, Copy[k].Tag );
+	}
+	// the same, summed by tag
+	for( INT i = 0; i < N; ++i )
+	{
+		if( !Copy[i].Size ) continue;
+		INT Sum = Copy[i].Size, Count = 1;
+		for( INT j = i + 1; j < N; ++j )
+			if( Copy[j].Size && !strcmp( Copy[i].Tag, Copy[j].Tag ) ) { Sum += Copy[j].Size; ++Count; Copy[j].Size = 0; }
+		if( Sum >= 512 * 1024 ) debugf( NAME_Log, "PSPMEM:   by tag %6i KB in %3i blocks  %s", Sum / 1024, Count, Copy[i].Tag );
+	}
+}
 static void PspDumpObjectsOnce()
 {
 	static UBOOL Done = 0;
 	if( Done || !GObj.GetInitialized() || !ParseParam( appCmdLine(), "MEMDUMP" ) ) return;
 	Done = 1;
+	appPspDumpBigBlocks( 40 );
 	GObj.Exec( "OBJ LIST", GSystem );
 }
 // Called for large allocations: dump the object list once when the heap is
@@ -319,6 +381,7 @@ CORE_API void* appMalloc( INT Size, const char* Tag )
 			PspDumpObjectsOnce();
 			appErrorf( "Out of memory: %i bytes (%s); %s", Size, Tag ? Tag : "?", PspHeapState() );
 		}
+	PspBigAdd( Ptr, Size, Tag );
 #endif
 
 #if CHECK_ALLOCS
@@ -335,6 +398,9 @@ CORE_API void appFree( void* Ptr )
 
 #if CHECK_ALLOCS
 	DeleteTrackedAllocation( Ptr );
+#endif
+#ifdef __PSP__
+	PspBigRemove( Ptr );
 #endif
 
 	free( Ptr );
@@ -382,6 +448,9 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 	// MSVC realloc() frees memory when NewSize is 0
 	if( Ptr && NewSize == 0 )
 	{
+#ifdef __PSP__
+		PspBigRemove( Ptr );
+#endif
 		free( Ptr );
 		return NULL;
 	}
@@ -389,12 +458,14 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 #ifdef __PSP__
 	{
 		PspLowMemoryCheck( NewSize );
+		PspBigRemove( Ptr );
 		void* Result = realloc( Ptr, NewSize );
 		if( !Result && NewSize > 0 )
 		{
 			PspDumpObjectsOnce();
 			appErrorf( "Out of memory: realloc %i bytes (%s); %s", NewSize, Tag ? Tag : "?", PspHeapState() );
 		}
+		PspBigAdd( Result, NewSize, Tag );
 		return Result;
 	}
 #else
