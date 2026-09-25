@@ -158,6 +158,15 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       A falling ASMD pickup destroyed itself with "moved without proper
       hashing" (fatal appError, DmRadikus): on PSP the unhash now removes
       the links at the hashed location and warns instead.
+      Hardware, four-bot DmRadikus, mean fps 16.6 (curved on) -> 17.0
+      (curved off) -> 18.0 (+ triangle list). Then two driver items from
+      the per-interval breakdown: canvas tiles were one glBegin each
+      (tile 387 -> 74 ms/100f once batched through the vertex ring, with
+      "tile" in the batch key since tiles draw with the depth test off),
+      and realtime texture re-uploads copied 4 bytes per texel for 8-bit
+      fire textures (image 444 -> 129, complex 577 -> 290). Frame rate
+      stayed at the 20 fps cap; the main thread went 66% -> 48% busy, so
+      the cap is now the limit: MaxFPS=30 is the next A/B.
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.

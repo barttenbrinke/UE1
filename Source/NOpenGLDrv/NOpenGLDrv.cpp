@@ -1063,6 +1063,7 @@ static UBOOL GPspBatchOpen  = 0;
 static QWORD GPspBatchTex   = 0;
 static DWORD GPspBatchFlags = 0;
 static const FSceneNode* GPspBatchFrame = NULL;
+static UBOOL GPspBatchTile  = 0;      // the open batch is canvas tiles (depth test off, see DrawTile)
 
 static void PspFlushBatch()
 {
@@ -1073,6 +1074,11 @@ static void PspFlushBatch()
 	}
 	GPspBatchVerts = 0;
 	GPspBatchOpen  = 0;
+	if( GPspBatchTile )
+	{
+		glEnable( GL_DEPTH_TEST );   // tiles ran with it off
+		GPspBatchTile = 0;
+	}
 }
 
 static void* PspClaimVtx( INT Bytes )
@@ -1458,7 +1464,7 @@ void UNOpenGLRenderDevice::DrawComplexSurfaceSingleTex( FSceneNode* Frame, FSurf
 			// path: texture, flags, frame; a realtime texture change reopens).
 			{
 				const UBOOL Realtime = ( Surface.Texture->TextureFlags & TF_RealtimeChanged );
-				if( GPspBatchOpen && ( Surface.Texture->CacheID != GPspBatchTex || Surface.PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime ) )
+				if( GPspBatchOpen && ( Surface.Texture->CacheID != GPspBatchTex || Surface.PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime || GPspBatchTile ) )
 					PspFlushBatch();
 				if( !GPspBatchOpen )
 				{
@@ -1679,7 +1685,7 @@ void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& 
 			uclock(GouraudCycles);
 			const UBOOL Modulated = ( PolyFlags & PF_Modulated );
 			const UBOOL Realtime  = ( Texture.TextureFlags & TF_RealtimeChanged );
-			if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime ) )
+			if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime || GPspBatchTile ) )
 				PspFlushBatch();
 			if( !GPspBatchOpen )
 			{
@@ -1846,7 +1852,7 @@ UBOOL UNOpenGLRenderDevice::DrawMeshTris( FSceneNode* Frame, FTextureInfo& Textu
 	uclock(GouraudCycles);
 	const UBOOL Modulated = ( PolyFlags & PF_Modulated );
 	const UBOOL Realtime  = ( Texture.TextureFlags & TF_RealtimeChanged );
-	if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime ) )
+	if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime || GPspBatchTile ) )
 		PspFlushBatch();
 	if( !GPspBatchOpen )
 	{
@@ -1914,33 +1920,17 @@ UBOOL UNOpenGLRenderDevice::DrawMeshTris( FSceneNode* Frame, FTextureInfo& Textu
 
 void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, FLOAT X, FLOAT Y, FLOAT XL, FLOAT YL, FLOAT U, FLOAT V, FLOAT UL, FLOAT VL, FSpanBuffer* Span, FLOAT Z, FPlane Light, FPlane Fog, DWORD PolyFlags )
 {
-#ifdef __PSP__
-	PspFlushBatch();
-#endif
 	guard(UNOpenGLRenderDevice::DrawTile);
-
-	SetSceneNode( Frame );
-	uclock(TileCycles);
-	SetBlend( PolyFlags );
-	SetTexture( 0, Texture, ( PolyFlags & PF_Masked ), 0.f );
-	ResetTexture( 1 );
-	ResetTexture( 2 );
-	ResetTexture( 3 );
-
-	if( PolyFlags & PF_Modulated )
-		glColor4f( 1.f, 1.f, 1.f, 1.f );
-	else
-		glColor4f( Light.X, Light.Y, Light.Z, 1.f );
-
 #ifdef __PSP__
-	// Canvas tiles are drawn with the depth test OFF on PSP. UE1 draws the
-	// whole canvas at Z=1.0: the menu panel first, its text over it. Desktop
-	// GL passes the equal depth (GL_LEQUAL); the GE does not, so menu text,
-	// HUD icons and the intro title were rejected while the panel showed.
-	// Found by bisecting with [PSP] TileDepthTest=0, which stays as a switch
-	// along with TileAlphaTest and a log of the first masked tiles.
+	// Canvas tiles (HUD, menus, fonts) go through the same vertex batch as
+	// polygons: one array draw per run of tiles with the same texture and
+	// flags instead of a glBegin/glEnd per tile (3 ms a frame of HUD on the
+	// PSP). The batch key carries "tile" because tiles draw with the depth
+	// test off -- UE1 puts the whole canvas at Z=1 and the GE rejects equal
+	// depth, so menu text over its panel would vanish (bisected earlier with
+	// [PSP] TileDepthTest; TileAlphaTest stays as a switch too).
 	{
-		static INT TileAlpha = -1, TileDepth = 0, TileLog = 0;
+		static INT TileAlpha = -1, TileDepth = 0;
 		if( TileAlpha < 0 )
 		{
 			TileAlpha = 1;
@@ -1948,19 +1938,62 @@ void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, F
 			GetConfigInt( "PSP", "TileDepthTest", TileDepth );
 			debugf( NAME_Log, "PSPTILE: alpha test %s, depth test %s", TileAlpha ? "on" : "OFF", TileDepth ? "on" : "OFF" );
 		}
-		if( !TileAlpha ) glDisable( GL_ALPHA_TEST );
-		if( !TileDepth ) glDisable( GL_DEPTH_TEST );
-		if( ( PolyFlags & PF_Masked ) && Y > 40.f && TileLog < 24 )   // skip the HUD line at the top; the menu is what is missing
+		uclock(TileCycles);
+		const UBOOL Modulated = ( PolyFlags & PF_Modulated );
+		const UBOOL Realtime  = ( Texture.TextureFlags & TF_RealtimeChanged );
+		if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime || !GPspBatchTile ) )
+			PspFlushBatch();
+		if( !GPspBatchOpen )
 		{
-			++TileLog;
-			debugf( NAME_Log, "PSPTILE: masked id=%08X%08X %ix%i mips=%i pal=%i rt=%i | XY %.0f,%.0f size %.0fx%.0f Z=%.2f | UV %.1f,%.1f + %.1f,%.1f mult %.5f,%.5f | flags %08X light %.2f,%.2f,%.2f",
-				(unsigned)( Texture.CacheID >> 32 ), (unsigned)Texture.CacheID, Texture.USize, Texture.VSize, Texture.NumMips, Texture.Palette ? 1 : 0,
-				( Texture.TextureFlags & TF_Realtime ) ? 1 : 0,
-				X, Y, XL, YL, Z, U, V, UL, VL, TexInfo[0].UMult, TexInfo[0].VMult, (unsigned)PolyFlags, Light.X, Light.Y, Light.Z );
+			SetSceneNode( Frame );
+			SetBlend( PolyFlags );
+			SetTexture( 0, Texture, ( PolyFlags & PF_Masked ), 0.f );
+			ResetTexture( 1 );
+			ResetTexture( 2 );
+			ResetTexture( 3 );
+			if( !TileAlpha ) glDisable( GL_ALPHA_TEST );
+			if( !TileDepth ) glDisable( GL_DEPTH_TEST );
+			GPspBatchOpen  = 1;
+			GPspBatchTile  = 1;
+			GPspBatchTex   = Texture.CacheID;
+			GPspBatchFlags = PolyFlags;
+			GPspBatchFrame = Frame;
 		}
+		BYTE* Out = PspBatchReserve( 6 );
+		if( Out )
+		{
+			const DWORD Color = Modulated ? 0xFFFFFFFFu
+				: ( (DWORD)PspToByte( Light.X ) | ( (DWORD)PspToByte( Light.Y ) << 8 ) | ( (DWORD)PspToByte( Light.Z ) << 16 ) | 0xFF000000u );
+			const FLOAT U0 = U * TexInfo[0].UMult, U1 = ( U + UL ) * TexInfo[0].UMult;
+			const FLOAT V0 = V * TexInfo[0].VMult, V1 = ( V + VL ) * TexInfo[0].VMult;
+			const FLOAT X0 = RFX2 * Z * ( X - Frame->FX2 ),      X1 = RFX2 * Z * ( X + XL - Frame->FX2 );
+			const FLOAT Y0 = RFY2 * Z * ( Y - Frame->FY2 ),      Y1 = RFY2 * Z * ( Y + YL - Frame->FY2 );
+			const FLOAT Q[4][4] = { { U0, V0, X0, Y0 }, { U1, V0, X1, Y0 }, { U1, V1, X1, Y1 }, { U0, V1, X0, Y1 } };
+			static const INT Idx[6] = { 0, 1, 2, 0, 2, 3 };
+			for( INT i = 0; i < 6; ++i )
+			{
+				const FLOAT* q = Q[Idx[i]];
+				FLOAT* T = (FLOAT*)Out; T[0] = q[0]; T[1] = q[1];
+				*(DWORD*)( Out + 8 ) = Color;
+				FLOAT* P = (FLOAT*)( Out + 12 ); P[0] = q[2]; P[1] = q[3]; P[2] = Z;
+				Out += 24;
+			}
+		}
+		uunclock(TileCycles);
+		return;
 	}
 #endif
-
+	SetSceneNode( Frame );
+	uclock(TileCycles);
+	SetBlend( PolyFlags );
+	SetTexture( 0, Texture, ( PolyFlags & PF_Masked ), 0.f );
+	ResetTexture( 1 );
+	ResetTexture( 2 );
+	ResetTexture( 3 );
+	if( PolyFlags & PF_Modulated )
+		glColor4f( 1.f, 1.f, 1.f, 1.f );
+	else
+		glColor4f( Light.X, Light.Y, Light.Z, 1.f );
 	glBegin( GL_TRIANGLE_FAN );
 		glTexCoord2f( (U   )*TexInfo[0].UMult, (V   )*TexInfo[0].VMult );
 		glVertex3f( RFX2*Z*(X   -Frame->FX2), RFY2*Z*(Y   -Frame->FY2), Z );
@@ -2697,7 +2730,8 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 		// re-uploaded, so the next upload does not overwrite it mid-draw.
 		if( ( Info.TextureFlags & TF_Realtime ) || !Info.Palette )
 		{
-			BYTE* Rotated = PspRotateDynTex( UploadBuf, UpW * UpH * 4 );
+			const INT RotBpp = ( UploadFormat == GL_COLOR_INDEX8_EXT || UploadFormat == GL_COLOR_INDEX ) ? 1 : 4;   // was always 4: a 4x over-copy for hardware-palette fire textures
+			BYTE* Rotated = PspRotateDynTex( UploadBuf, UpW * UpH * RotBpp );
 			if( Rotated )
 				UploadBuf = Rotated;
 		}
