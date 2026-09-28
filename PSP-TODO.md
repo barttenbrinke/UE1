@@ -75,12 +75,21 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       Result: DmRadikus -> NyLeve -> Dig -> Chizra -> SkyTown -> ... three
       laps in the emulator, heap arena never above 29 MB (+ up to 10 MB in
       the region). Hardware not yet run with this build.
-- [ ] Tools added today: -SHOTAT=secs -SHOTNAME=label writes
-      System/shot-<label>.ppm from glReadPixels (works in PPSSPP and on
-      the card; scratchpad/ppmdiff.py compares two), -MESHLIGHTCACHE=0/1,
-      -MESHGUARD=pct. Screen captures of the emulator window do not work
-      from this session (System Events not authorised; full-screen grabs
-      hit the wrong display).
+- [ ] Render A/B tooling (2026-09-28 evening), and why it did not settle
+      the light-cache question: -SHOTAT=secs -SHOTNAME=label writes
+      System/shot-<label>.ppm from the displayed framebuffer
+      (sceDisplayGetFrameBuf; -SHOTGL=1 uses glReadPixels as pspgl's own
+      screenshot test does). In PPSSPP with a hardware backend the
+      emulated VRAM never holds the image (all black either way) and the
+      SoftwareRendering ini switch did not visibly engage -- so this only
+      works on the card (untested there yet). -DRAWCRC=secs logs, for
+      three frames, per-draw checksums of positions, colours and UVs
+      (PSPDRAW lines) plus a frame checksum; two runs of the slot-0 save
+      still differ in every draw's positions because the standing player
+      drifts on the tilted floor, so a cross-run comparison needs a save on
+      flat ground (or a frozen camera). -MESHLIGHTCACHE=0/1, -MESHGUARD=pct
+      remain for a by-eye A/B on the card. Screen captures of the emulator
+      window do not work from this session (System Events not authorised).
 - [ ] Vortex Rikers collapsing-floor sequence (save slot 0, 2026-09-28),
       replayed on the card with `-LOAD=0 -WALKDELAY=15 -AUTOWALK=12`.
       What happens: the trigger tilts the floor, an Earthquake actor

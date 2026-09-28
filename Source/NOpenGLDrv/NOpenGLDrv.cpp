@@ -1,6 +1,7 @@
 #include "SDL2/SDL.h"
 #ifdef __PSP__
 #include <pspsysmem.h>
+#include <pspdisplay.h>   // -SHOTAT reads the displayed framebuffer
 #include <pspthreadman.h>   // per-thread run clocks in the PSPPERF report
 #include <malloc.h>
 #include "glad_psp.h"
@@ -136,6 +137,7 @@ static INT GPspUploadFailed     = 0;
 static INT GPspUpFirst = 0, GPspUpRealtime = 0, GPspUpBig = 0;   // per report interval
 static INT GPspUpBytes = 0;                                       // bytes handed to GL per interval
 #include <pspsysmem.h>
+#include <pspdisplay.h>   // -SHOTAT reads the displayed framebuffer
 #include <pspthreadman.h>   // per-thread run clocks in the PSPPERF report
 // Heap picture for the log: newlib arena in use / free, plus what the kernel
 // still has outside the heap. Cheap; used in periodic reports and on failures.
@@ -287,11 +289,34 @@ static void* PspClaimVtx( INT Bytes );
 // The draw itself: from the VBO by first-vertex offset (set by PspSetArrays),
 // or the old client-array path.
 static INT GPspDrawCalls = 0, GPspDrawVerts = 0;   // per report interval
+// -DRAWCRC=secs: for twenty frames from that second, checksum every vertex
+// slice handed to the GE (positions, colours, UVs) and log one line per
+// frame. Two runs of a still scene with a CPU-side render change should
+// print the same sequence; this needs no pixels, so it works in PPSSPP
+// with a hardware backend, where the emulated VRAM never holds the image.
+static INT   GPspDrawCrcAt = -2, GPspDrawCrcLeft = 0; static DWORD GPspFrameCrc = 2166136261u; static INT GPspFrameCrcDraws = 0;
 static inline void PspDrawArrays( GLenum Mode, INT Count )
 {
 	const INT First = ( GPspVboState == 1 ) ? GPspDrawFirst : 0;
 	glDrawArrays( Mode, First, Count );
 	++GPspDrawCalls; GPspDrawVerts += Count;
+	if( GPspDrawCrcLeft > 0 && GPspVtxRing )
+	{
+		// Per draw: separate checksums of positions, colours and UVs, so a
+		// still scene compares across runs field by field (UVs pan with time).
+		const BYTE* Slice = ( GPspVboState == 1 ) ? GPspVboBase + First * PSP_VTX_STRIDE : (const BYTE*)GPspVtxRing;
+		DWORD Pos = 2166136261u, Col = 2166136261u, Uv = 2166136261u;
+		for( INT v = 0; v < Count; ++v )
+		{
+			const BYTE* V = Slice + v * PSP_VTX_STRIDE;
+			for( INT k = 0; k < 8; ++k )  Uv  = ( Uv  ^ V[k] ) * 16777619u;
+			for( INT k = 8; k < 12; ++k ) Col = ( Col ^ V[k] ) * 16777619u;
+			for( INT k = 12; k < 24; ++k ) Pos = ( Pos ^ V[k] ) * 16777619u;
+		}
+		debugf( NAME_Log, "PSPDRAW: f%i mode %d n %d pos %08x col %08x uv %08x", 3 - GPspDrawCrcLeft, (int)Mode, Count, (unsigned)Pos, (unsigned)Col, (unsigned)Uv );
+		GPspFrameCrc = ( GPspFrameCrc * 16777619u ) ^ Pos ^ Col;
+		++GPspFrameCrcDraws;
+	}
 	static INT Logged = 0;
 	if( Logged < 6 )
 	{
@@ -831,6 +856,15 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 
 	glFlush();
 #ifdef __PSP__
+	{
+		if( GPspDrawCrcAt == -2 ) { GPspDrawCrcAt = -1; INT At = 0; if( Parse( appCmdLine(), "DRAWCRC=", At ) && At > 0 ) GPspDrawCrcAt = At; }
+		if( GPspDrawCrcLeft > 0 )
+		{
+			debugf( NAME_Log, "PSPDRAWCRC: frame %i crc %08x draws %i", 3 - GPspDrawCrcLeft, (unsigned)GPspFrameCrc, GPspFrameCrcDraws );
+			--GPspDrawCrcLeft; GPspFrameCrc = 2166136261u; GPspFrameCrcDraws = 0;
+		}
+		else if( GPspDrawCrcAt > 0 && appSeconds() >= (DOUBLE)GPspDrawCrcAt ) { GPspDrawCrcAt = 0; GPspDrawCrcLeft = 3; GPspFrameCrc = 2166136261u; GPspFrameCrcDraws = 0; }
+	}
 	// -SHOTAT=secs [-SHOTNAME=label]: once, after that many seconds, read the
 	// frame back and write System/shot-<label>.ppm. Same picture in PPSSPP and
 	// on the card, so render changes can be pixel-compared without a camera
@@ -850,10 +884,41 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 			BYTE* Pix = (BYTE*)appMalloc( W * H * 4, "shot" );
 			if( Pix )
 			{
+				// pspgl's glReadPixels rejected RGBA/UNSIGNED_BYTE (INVALID_ENUM),
+				// so read the displayed framebuffer straight from VRAM instead:
+				// the frame before this one, which is fine for a still shot.
 				glFinish();
-				glPixelStorei( GL_PACK_ALIGNMENT, 1 );
-				glReadPixels( 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, Pix );
-				const GLenum Err = glGetError();
+				void* Fb = NULL; int FbW = 0, FbFmt = 0; GLenum Err = 0;
+				sceDisplayGetFrameBuf( &Fb, &FbW, &FbFmt, PSP_DISPLAY_SETBUF_IMMEDIATE );
+				INT UseGL = 0; Parse( appCmdLine(), "SHOTGL=", UseGL );
+				debugf( NAME_Log, "PSPSHOT: framebuffer %p width %d format %d, first words %08x %08x %08x", Fb, FbW, FbFmt,
+					Fb ? ((const DWORD*)( (u32)Fb | 0x40000000 ))[0] : 0u, Fb ? ((const DWORD*)( (u32)Fb | 0x40000000 ))[100 * FbW + 100] : 0u, Fb ? ((const DWORD*)Fb)[100 * FbW + 100] : 0u );
+				if( UseGL || !Fb || FbW <= 0 )
+				{
+					// pspgl's own screenshot test: invert + RGBA/UNSIGNED_BYTE.
+					while( glGetError() != GL_NO_ERROR ) {}
+					glPixelStorei( 0x8758 /*GL_PACK_INVERT_MESA*/, GL_TRUE );
+					glPixelStorei( GL_PACK_ALIGNMENT, 1 );
+					glReadPixels( 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, Pix );
+					Err = glGetError();
+					// invert back to bottom-up rows for the writer below
+					for( INT y = 0; y < H / 2; ++y ) for( INT x = 0; x < W * 4; ++x ) { const BYTE T = Pix[y*W*4+x]; Pix[y*W*4+x] = Pix[(H-1-y)*W*4+x]; Pix[(H-1-y)*W*4+x] = T; }
+				}
+				else
+				{
+					const BYTE* Src = (const BYTE*)( (u32)Fb | 0x40000000 );
+					for( INT y = 0; y < H; ++y )
+						for( INT x = 0; x < W; ++x )
+						{
+							BYTE* D = Pix + ( ( H - 1 - y ) * W + x ) * 4;   // stored bottom-up like glReadPixels
+							DWORD R, G, B;
+							if( FbFmt == PSP_DISPLAY_PIXEL_FORMAT_8888 ) { const DWORD C = ((const DWORD*)Src)[ y * FbW + x ]; R = C & 0xff; G = ( C >> 8 ) & 0xff; B = ( C >> 16 ) & 0xff; }
+							else if( FbFmt == PSP_DISPLAY_PIXEL_FORMAT_565 ) { const _WORD C = ((const _WORD*)Src)[ y * FbW + x ]; R = ( C & 31 ) * 255 / 31; G = ( ( C >> 5 ) & 63 ) * 255 / 63; B = ( ( C >> 11 ) & 31 ) * 255 / 31; }
+							else if( FbFmt == PSP_DISPLAY_PIXEL_FORMAT_5551 ) { const _WORD C = ((const _WORD*)Src)[ y * FbW + x ]; R = ( C & 31 ) * 255 / 31; G = ( ( C >> 5 ) & 31 ) * 255 / 31; B = ( ( C >> 10 ) & 31 ) * 255 / 31; }
+							else { const _WORD C = ((const _WORD*)Src)[ y * FbW + x ]; R = ( C & 15 ) * 17; G = ( ( C >> 4 ) & 15 ) * 17; B = ( ( C >> 8 ) & 15 ) * 17; }
+							D[0] = (BYTE)R; D[1] = (BYTE)G; D[2] = (BYTE)B; D[3] = 255;
+						}
+				}
 				char Name[128]; appSprintf( Name, "shot-%s.ppm", ShotName );
 				FILE* F = appFopen( Name, "wb" );
 				if( F )
