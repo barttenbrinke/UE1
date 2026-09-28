@@ -2514,30 +2514,44 @@ void UNOpenGLRenderDevice::ConvertTextureMipBGRA7777( const FMipmap* Mip, BYTE*&
 // draw is still reading it.
 //
 // "Dynamic" is the Vita's test: TF_Realtime, or no palette (lightmaps and fog
-// maps are BGRA7777 and unpalettised), so it is always 4 bytes per pixel here.
+// maps are BGRA7777 and unpalettised). Hardware-palette fire and water
+// textures are one byte per pixel, lightmaps four.
 //
-enum { PSP_DYN_TEX_BUFS = 3 };
-static BYTE* GPspDynTex[PSP_DYN_TEX_BUFS] = { NULL, NULL, NULL };
-static INT   GPspDynTexSize = 0;
-static INT   GPspDynTexCur  = 0;
+// The copies live in one byte ring rather than N per-texture buffers: the
+// first version had three slots shared by every dynamic texture, and a view
+// with three animated surfaces re-uploaded three textures per frame, so each
+// slot was rewritten every frame while the GE (a frame behind the CPU) was
+// still sampling it -- visible as intermittent garbage on those surfaces.
+// 512 KB holds ~8 frames of three 256x256 8-bit textures; the ring grows if
+// a single texture needs more than half of it, and the old ring is retired
+// rather than freed until the next growth so in-flight draws keep valid data.
+//
+enum { PSP_DYN_TEX_RING = 512 * 1024 };
+static BYTE* GPspDynRing        = NULL;
+static BYTE* GPspDynRingRetired = NULL;
+static INT   GPspDynRingSize    = 0;
+static INT   GPspDynRingPos     = 0;
 
 static BYTE* PspRotateDynTex( const BYTE* Src, INT Bytes )
 {
 	if( Bytes <= 0 )
 		return NULL;
-	if( Bytes > GPspDynTexSize )
+	const INT Need = ( Bytes + 63 ) & ~63;
+	if( Need * 2 > GPspDynRingSize )
 	{
-		for( INT i = 0; i < PSP_DYN_TEX_BUFS; ++i )
-		{
-			BYTE* New = (BYTE*)realloc( GPspDynTex[i], Bytes );
-			if( !New )
-				return NULL;
-			GPspDynTex[i] = New;
-		}
-		GPspDynTexSize = Bytes;
+		const INT NewSize = Max( (INT)PSP_DYN_TEX_RING, Need * 2 );
+		BYTE* New = (BYTE*)memalign( 64, NewSize );
+		if( !New )
+			return NULL;
+		if( GPspDynRingRetired )
+			free( GPspDynRingRetired );
+		GPspDynRingRetired = GPspDynRing;
+		GPspDynRing = New; GPspDynRingSize = NewSize; GPspDynRingPos = 0;
 	}
-	BYTE* Dst = GPspDynTex[GPspDynTexCur];
-	GPspDynTexCur = ( GPspDynTexCur + 1 ) % PSP_DYN_TEX_BUFS;
+	if( GPspDynRingPos + Need > GPspDynRingSize )
+		GPspDynRingPos = 0;
+	BYTE* Dst = GPspDynRing + GPspDynRingPos;
+	GPspDynRingPos += Need;
 	appMemcpy( Dst, Src, Bytes );
 	return Dst;
 }

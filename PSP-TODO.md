@@ -27,6 +27,17 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 - [ ] OpenAL mixer on the Media Engine: no longer worth it (2% without
       reverb). Reverb on the ME would be, if the reverb is wanted back.
 
+- [ ] Texture corruption "here and there" reported on the card build with
+      the batched tile/mesh paths (2026-09-28). Candidate fixed, not yet
+      confirmed by eye: the re-upload copies for dynamic textures (realtime
+      fire/water/sky, unpalettised lightmaps) lived in three slots shared
+      by every dynamic texture; a view with three animated surfaces wrote
+      each slot every frame while the GE, a frame behind, still sampled
+      it. Now a 512 KB byte ring (~8 frames of three 256x256 8-bit
+      textures) in `PspRotateDynTex`. If garbage persists, next suspects:
+      the batched DrawTile path (texture switch inside a batch) and the
+      mip fill placeholders (an 8x8 copy of the smallest real mip is what
+      the GE samples once a texture is under 8 pixels on screen).
 - [ ] Level load time, remaining half: on the card an Entry load is now
       7.3 s of which 4.0 s is stick I/O, DmRadikus 14.3 s / 7.7 s. The
       `-REFILLKB` A/B (see the done list) showed bytes moved, not read
