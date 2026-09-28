@@ -58,22 +58,37 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       ~800 mesh polys/frame (decorations, corpses), mesh pipeline 21 ms +
       occlusion 22 ms + polyv 11 ms + illum 9 ms per frame. General
       mesh-heavy-view cost; the lower deck runs 27 fps with 0 mesh polys.
-      (b) openal-soft (the SDK's 1.6.372) mixer thread at priority 22
-      above the main thread's 36 takes 25-57% of the CPU while the
-      earthquake plays 4-6 voices (7% in a bot match), so every stick
-      wait and every main-thread frame stretches behind it. Reverb is
-      off, HRTF is not requested, AL_SOFT_source_resampler does not
-      exist in this build; -MAXVOICES=6 lowers it to 16-34%. Real fix
-      is a cheaper mixer -- not started.
+      (b) DONE: openal-soft (the SDK's 1.6.372) is gone from the PSP
+      build. Its mixer thread sat at priority 22 above the game thread's
+      36 and took 25-57% of the CPU with 4-6 voices playing (7% in a bot
+      match), stretching every stick wait and frame behind it. Replaced
+      by PspMix (NOpenALDrv/PspMix.*): a 32-voice integer mixer (16.16
+      resampling with linear interpolation, Q12 gains, 1024-frame stereo
+      blocks at 44100 Hz, ring of 4) whose voice table lives in uncached
+      memory. The Media Engine mixes the blocks inside the existing music
+      render loop; when the ME is off (PPSSPP, -MUSICME=0) a blocking CPU
+      thread (priority 18) mixes each block just before
+      sceAudioOutputBlocking. PspAL.cpp is a thin OpenAL shim over it (the
+      driver's AL calls are unchanged): linear-clamped distance model and
+      constant-power stereo pan on the CPU per source change, no doppler,
+      no effects, streaming queue with gapless Next hand-off for the CPU
+      music path. Result: the audio thread no longer registers in the CPU
+      accounting, mid-play stick reads back to 2 ms, the corridor view
+      12 -> 17 fps standing still, the collapse replay has no frame over
+      230 ms with 16 voices mixing, 0 underruns. -MAXVOICES/-RESAMPLER/
+      -OUTPUTRATE are moot now (the shim ignores the last two).
+      Not judged by ear yet: panning width, loudness vs. music, looping
+      ambient seams.
       (c) Mid-play reloads (first-play sounds, first-draw textures,
       chunk meshes) at ~60 ms per stick read because of (b): the raw
       driver does 2 ms (`-IOCHECK`, `PSPIOBENCH` mid-walk). DONE:
       appReloadObject raises the main thread to priority 20 for the
       reload (`[PSP] ReloadPriority`, `-RELOADPRIO=`): stall stick share
-      1.2 s -> 0.1-0.2 s. DONE: the smallest deferred sounds are
-      registered after each level load up to `[PSP] SoundPrefetchKB`
-      (1536; keep under SoundBudgetKB); this level has 157 deferred
-      sounds / 5.4 MB, so the budget covers ~87 of them.
+      1.2 s -> 0.1-0.2 s. DONE: the smallest deferred sounds are reloaded
+      (appReloadObject; USound::Serialize registers them) after each
+      level load up to `[PSP] SoundPrefetchKB` (1536; keep under
+      SoundBudgetKB), ~1 s per load; this level has 157 deferred sounds /
+      5.4 MB, so the budget covers ~70 of them.
       (d) Timer bunching: ULevel::Tick clamped the step at 0.4 s, so a
       stalled frame let all 18 ExplosionChain delays (0.3-0.9 s) expire
       together: one 2 s frame (HurtRadius = VisibleCollidingActors, a

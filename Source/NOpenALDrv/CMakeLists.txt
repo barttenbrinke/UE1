@@ -1,6 +1,11 @@
 project(NOpenALDrv C CXX)
 
 set(SRC_FILES "NOpenALDrv.cpp")
+if(PSP)
+  # Own mixer (Media Engine or a blocking CPU thread) behind a thin OpenAL
+  # shim; the SDK's openal-soft 1.6 is not linked at all.
+  list(APPEND SRC_FILES "PspMix.cpp" "PspAL.cpp")
+endif()
 
 add_library(${PROJECT_NAME} ${LIB_TYPE} ${SRC_FILES})
 
@@ -17,7 +22,11 @@ if(MSVC)
   target_link_options(${PROJECT_NAME} PRIVATE "/SAFESEH:NO")
 endif()
 
-target_link_libraries(${PROJECT_NAME} ${OPENAL_LIBRARY} ${LIBXMP_LIBRARY})
+if(PSP)
+  target_link_libraries(${PROJECT_NAME} ${LIBXMP_LIBRARY})
+else()
+  target_link_libraries(${PROJECT_NAME} ${OPENAL_LIBRARY} ${LIBXMP_LIBRARY})
+endif()
 
 target_link_libraries(${PROJECT_NAME} Engine Core)
 

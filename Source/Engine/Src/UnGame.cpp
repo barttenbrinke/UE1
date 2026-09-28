@@ -602,8 +602,12 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 			for( INT i = 0; i < Deferred.Num() && PrefetchKB > 0; i++ )
 			{
 				if( KB + Deferred(i)->OriginalSize / 1024 > PrefetchKB ) break;
-				Engine->Audio->RegisterSound( Deferred(i) );
-				KB += Deferred(i)->OriginalSize / 1024; ++N;
+				// Re-read the object: USound::Serialize registers it on the way
+				// (RegisterSound itself needs the samples, which are not here).
+				if( appReloadObject( Deferred(i) ) && Deferred(i)->Handle )
+				{
+					KB += Deferred(i)->OriginalSize / 1024; ++N;
+				}
 			}
 			debugf( NAME_Log, "PSPPERF: prefetched %i of %i deferred sounds (%i KB of %i) in %.1f s", N, Deferred.Num(), KB, PrefetchKB, (FLOAT)( appSeconds() - T1 ) );
 		}

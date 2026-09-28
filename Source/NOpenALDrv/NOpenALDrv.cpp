@@ -58,6 +58,7 @@ static UBOOL  GPspMusStreaming = 0;
 //   [PSP] MusicMEStereo=1  ; stereo at 44100 straight into the channel (else mono, upsampled)
 //
 #include <me-core-mapper/me-core.h>   // defines the ME entry glue: include from ONE file only
+#include "PspMix.h"                    // the sound mixer the ME loop below also runs
 // libxmp's player state lives in the heap and is written by the Media
 // Engine, which has its own data cache. A 64-byte line holding the end of
 // a libxmp block and the start of a neighbouring CPU block gets written
@@ -139,7 +140,9 @@ struct FPspMeShared
 	volatile u32 BlockBytes;
 	volatile u32 Err;         // last xmp_play_buffer error
 	volatile u32 Blocks;      // blocks rendered in total
+	volatile u32 Mix;         // uncached address of the FPspMixShared the ME mixes for (0 = none)
 };
+static int GPspMeMixAcc[PSP_MIX_FRAMES * 2] __attribute__((aligned(64)));   // ME-side accumulator; the CPU never touches it
 static FPspMeShared* GPspMe = NULL;     // uncached alias
 static INT   GPspMeInit   = 0;          // 0 untried, 1 ready, -1 unavailable
 static UBOOL GPspMeActive = 0;          // current song renders on the ME
@@ -225,6 +228,7 @@ __attribute__((noinline, aligned(4))) void meLibOnProcess( void )   // declared 
 		// One block of slack: the block the CPU just handed to the channel is
 		// still being read by the audio hardware while the next one plays, so
 		// the ME may not reuse it until the CPU has consumed one more.
+		int Did = 0;
 		if( Ctx && ( Me->Write - Me->Read ) < PSP_ME_BLOCKS - 1 )
 		{
 			void* Block = (void*)( Me->Ring + ( Me->Write % PSP_ME_BLOCKS ) * Me->BlockBytes );
@@ -234,8 +238,20 @@ __attribute__((noinline, aligned(4))) void meLibOnProcess( void )   // declared 
 			meLibSync();
 			Me->Write = Me->Write + 1;
 			Me->Blocks = Me->Blocks + 1;
+			Did = 1;
 		}
-		else
+		// Sound effects: one block ahead of the output thread, same slack rule.
+		FPspMixShared* Mix = (FPspMixShared*)Me->Mix;
+		if( Mix && Mix->Enable && ( Mix->Write - Mix->Read ) < PSP_MIX_BLOCKS - 1 )
+		{
+			short* Block = (short*)( Mix->Ring + ( Mix->Write % PSP_MIX_BLOCKS ) * PSP_MIX_FRAMES * 4 );
+			PspMixBlock( Mix, Block, GPspMeMixAcc );
+			meLibSync();
+			Mix->Write = Mix->Write + 1;
+			Mix->Blocks = Mix->Blocks + 1;
+			Did = 1;
+		}
+		if( !Did )
 			meLibDelayPipeline();
 	}
 }
@@ -274,6 +290,7 @@ static UBOOL PspMeReady()
 	GPspMe = (FPspMeShared*)( (u32)Shared | 0x40000000 );
 	GPspMe->Ring       = (u32)Ring | 0x40000000;
 	GPspMe->BlockBytes = BlockBytes;
+	GPspMe->Mix        = (u32)GPspMix;   // NULL if the mixer is not up yet
 	const int Table = meLibDefaultInit();   // extracts + loads the kernel bridge, starts the ME on meLibOnProcess
 	if( Table < 0 )
 	{
@@ -284,6 +301,11 @@ static UBOOL PspMeReady()
 	debugf( NAME_Log, "PSPMUSIC: Media Engine up (table %i, heartbeat %u), render rate %i Hz, %i blocks of %i frames",
 		Table, (unsigned)GPspMe->Heartbeat, GPspMeRate, (int)PSP_ME_BLOCKS, (int)PSP_MUS_FRAMES );
 	GPspMeInit = 1;
+	if( GPspMix && GPspMe->Heartbeat > 0 )
+	{
+		GPspMix->Enable = 1;   // from here the ME mixes the effects; the output thread only feeds the channel
+		debugf( NAME_Log, "PSPMIX: sound effects mix on the Media Engine" );
+	}
 	return 1;
 }
 
@@ -634,7 +656,9 @@ UBOOL UNOpenALAudioSubsystem::Init()
 	NumSources = 16;
 	GetConfigInt( "PSP", "MaxVoices", NumSources );
 	Parse( appCmdLine(), "MAXVOICES=", NumSources );   // hardware A/B
-	NumSources = Clamp( NumSources, 4, (INT)MAX_SOURCES );
+	NumSources = Clamp( NumSources, 4, (INT)PSP_MIX_VOICES - 1 );   // one voice stays for the music stream
+	PspMixInit();
+	PspMeReady();   // the ME mixes the effects too, so bring it up now rather than at the first song
 #else
 	NumSources = MAX_SOURCES;
 #endif
@@ -1401,7 +1425,8 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 		{
 			INT Playing = 0;
 			for( INT i = 0; i < NumSources; ++i ) { ALint St = 0; alGetSourcei( Sources[i], AL_SOURCE_STATE, &St ); if( St == AL_PLAYING ) ++Playing; }
-			debugf( NAME_Log, "PSPSND: resident %d KB in %d sounds (budget %d KB, %d evicted); %d of %d voices playing", GPspSndResident / 1024, GPspSndRecs.Num(), PspSndBudgetKB(), GPspSndEvicted, Playing, NumSources );
+			debugf( NAME_Log, "PSPSND: resident %d KB in %d sounds (budget %d KB, %d evicted); %d of %d voices playing; mixer %s, %u blocks, %u underruns", GPspSndResident / 1024, GPspSndRecs.Num(), PspSndBudgetKB(), GPspSndEvicted, Playing, NumSources,
+				GPspMix ? ( GPspMix->Enable ? "on the ME" : "on the CPU" ) : "none", GPspMix ? (unsigned)GPspMix->Read : 0u, GPspMix ? (unsigned)GPspMix->Underruns : 0u );
 		}
 	}
 #endif
