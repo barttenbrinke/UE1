@@ -3521,8 +3521,10 @@ CORE_API UBOOL appReloadObject( UObject* Object )
 	if( !Object || !Object->GetLinker() )
 		return 0;
 	Object->SetFlags( RF_NeedLoad );
-	++GPspReloading;
+	++GPspReloading; ++GPspCtrReloads;
+	const DWORD C0 = appCycles();
 	Object->GetLinker()->Preload( Object );
+	GPspReloadCycles += (DWORD)( appCycles() - C0 );
 	--GPspReloading;
 	return !( Object->GetFlags() & RF_NeedLoad );
 	unguard;

@@ -712,7 +712,8 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 			{
 				extern CORE_API INT GPspFileRefills, GPspFileRefillBytes;
 				static INT LastRefills = 0, LastBytes = 0;
-				debugf( NAME_Log, "PSPPERF:   memory stick: %i window refills, %i KB read", GPspFileRefills - LastRefills, ( GPspFileRefillBytes - LastBytes ) / 1024 );
+				char Top[512]; appPspStickReport( Top, 512 );
+				debugf( NAME_Log, "PSPPERF:   memory stick: %i window refills, %i KB read; %s", GPspFileRefills - LastRefills, ( GPspFileRefillBytes - LastBytes ) / 1024, Top );
 				LastRefills = GPspFileRefills; LastBytes = GPspFileRefillBytes;
 			}
 			debugf( NAME_Log, "PSPPERF:   draws: %i mesh polys in %i batches, %i facet passes, %i ring wraps; %i array draws, %i verts", GPspBatchPolys, GPspBatchDraws, GPspFacetDraws, GPspRingWraps, GPspDrawCalls, GPspDrawVerts );
@@ -2772,7 +2773,7 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 #endif
 		// Upload to GL.
 #ifdef __PSP__
-		++GPspUploadCount;
+		++GPspUploadCount; ++GPspCtrUploads;
 #endif
 		if( NewTexture )
 			glTexImage2D( GL_TEXTURE_2D, MipIndex, InternalFormat, UpW, UpH, 0, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );

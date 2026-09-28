@@ -47,16 +47,42 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       array would then be NULL -- untested, left alone.
       The dynamic-texture copy ring (three slots -> 512 KB byte ring) was
       a real but separate hazard and stays.
+- [ ] Vortex Rikers collapsing-floor sequence (save slot 0, 2026-09-28),
+      replayed on the card with `-LOAD=0 -WALKDELAY=15 -AUTOWALK=12`.
+      Two separate problems:
+      (a) Standing at the save spot the scene runs at 12 fps before anything
+      happens: ~875 mesh polys/frame (corridor decorations), mesh pipeline
+      22 ms + occlusion 20 ms + polyv 9 ms + illum 6 ms per frame. The
+      lower deck after the drop runs 27 fps with 0 mesh polys. This is
+      the general "mesh-heavy view" cost, not the earthquake.
+      (b) During the collapse: single frames of 0.8-2 s, each fully
+      accounted for by appReloadObject of sounds played for the first
+      time (samples are deferred at load): 5-36 stick reads per stall at
+      ~60 ms per read, no handle reopens. The raw driver, measured in the
+      same process (`-IOCHECK` seek+read benchmark), does a random 8 KB
+      seek+read in 1.7-2.4 ms, close+open in 13 ms. So something in the
+      play-time read path (direct reads of odd lengths? the audio thread
+      pre-empting? cache writeback of large destination buffers?) costs
+      30x the driver. NEXT: the odd-length / unaligned read benchmark is
+      built into `-IOCHECK` (UnrealI.u section) -- run it. Then either fix
+      the path or prefetch a level's sounds at load (TObjectIterator<USound>
+      with empty Data, within the sound budget).
+      Tools: `PSPTEST: slow frame` lines (every frame >60 ms while the walk
+      runs, with deltas of stick ms/reads/reopens/seeks, linker preload ms,
+      reloads, uploads, sounds, mesh reload KB), per-file stick attribution
+      on the frame report and on the LoadMap line (`appPspStickReport`).
 - [ ] Crash replay from a save (2026-09-28): `-LOAD=N` loads save slot N
-      as soon as the entry level is up; `-AUTOWALK=secs` then holds the
-      stick full forward (NSDLDrv injects SDL's -32767 on LEFTY while the
-      engine counts `GPspAutoWalkLeft` down) once the saved level runs.
-      Workflow: save in-game facing the crash, pull `Save/SaveN.usa` (plus
-      `SaveN0.usa`... for hubs) over PSPLink into the PPSSPP Save folder,
-      run with `-LOAD=N -AUTOWALK=10` in the emulator first, then on the
-      PSP under PSPLink for the exception address. Verified in the
-      emulator with the save-test slot; the first frame after the load
-      feeds one oversized axis step (dt = load time) -- harmless so far.
+      (0 is valid) as soon as the entry level is up; `-AUTOWALK=secs` then
+      holds the stick full forward (NSDLDrv injects SDL's -32767 on LEFTY
+      while the engine counts `GPspAutoWalkLeft` down, 0.1 s per tick at
+      most: the tick after a load carries the whole load time), after
+      `-WALKDELAY=secs` of standing still so the post-load spike (first
+      draw: ~40 reloads, 150 uploads, 1.6 s) is out of the way.
+      Workflow: save in-game facing the spot, `scratchpad/pull-save.sh N`
+      copies `Save/SaveN.usa` (plus hub files) over PSPLink into the PPSSPP
+      Save folder, replay in the emulator for logic and on the PSP under
+      PSPLink for timing (PPSSPP is several times faster and capped at 20
+      fps: frame-rate problems do not show there).
 - [ ] Level load time, remaining half: on the card an Entry load is now
       7.3 s of which 4.0 s is stick I/O, DmRadikus 14.3 s / 7.7 s. The
       `-REFILLKB` A/B (see the done list) showed bytes moved, not read

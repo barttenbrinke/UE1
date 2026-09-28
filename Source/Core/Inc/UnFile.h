@@ -398,6 +398,10 @@ CORE_API const char* appPspHeapState();
 CORE_API INT appPspArenaKB();
 CORE_API INT appPspHeapUsedKB();
 CORE_API void appPspIoCheck( const char* Filename );
+// Per-frame stall attribution (the -AUTOWALK slow-frame log): cumulative counters.
+CORE_API extern INT   GPspCtrReloads, GPspCtrUploads, GPspCtrSounds, GPspCtrPreloads;
+CORE_API extern DWORD GPspReloadCycles, GPspPreloadCycles;
+CORE_API void appPspStickReport( char* Out, INT Max );   // top files by stick bytes since the last call
 CORE_API void appPspLoadCacheBegin();
 CORE_API void appPspLoadCacheEnd( INT& Files, INT& KB );
 CORE_API void appPspDumpBigBlocks( INT Top );

@@ -559,6 +559,10 @@ static void PspPrefetchLevel( ULevel* Level )
 }
 #endif
 
+#ifdef __PSP__
+static FLOAT  GPspAutoWalkPending = 0.f, GPspAutoWalkDelay = 0.f;   // -AUTOWALK waiting for -WALKDELAY
+static DOUBLE GPspAutoWalkT0 = 0.0;                                   // when the walk began (slow-frame log)
+#endif
 ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Error256 )
 {
 	guard(UGameEngine::LoadMap);
@@ -582,17 +586,22 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 		PspPrefetchLevel( L );
 		INT CacheFiles = 0, CacheKB = 0; appPspLoadCacheEnd( CacheFiles, CacheKB );
 		{
-			INT Walk = 0; Parse( appCmdLine(), "AUTOWALK=", Walk );
-			if( Walk > 0 && appStrstr( Map, "?load" ) ) { GPspAutoWalkLeft = (FLOAT)Walk; debugf( NAME_Log, "PSPTEST: autowalk %i s", Walk ); }
+			INT Walk = 0, Delay = 0; Parse( appCmdLine(), "AUTOWALK=", Walk ); Parse( appCmdLine(), "WALKDELAY=", Delay );
+			if( Walk > 0 && appStrstr( Map, "?load" ) ) { GPspAutoWalkPending = (FLOAT)Walk; GPspAutoWalkDelay = (FLOAT)Delay; debugf( NAME_Log, "PSPTEST: autowalk %i s after %i s", Walk, Delay ); }
 		}
 		if( L ) for( INT i = 0; i < L->Num(); ++i ) if( !L->Actors(i) ) ++NullActors;
 		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s; actors %i (%i null); stick: %i refills %i KB, %.1f s in read/seek/open, %i seeks, %i reopens; %i files (%i KB) read whole",
 			Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState(), L ? L->Num() : 0, NullActors,
 			GPspFileRefills - Refills0, ( GPspFileRefillBytes - Bytes0 ) / 1024, (FLOAT)( GSecondsPerCycle * (DOUBLE)( GPspFileIoCycles - Io0 ) ), GPspFileSeeks - Seeks0, GPspFileReopens - Reopens0, CacheFiles, CacheKB );
+		{
+			char Top[768]; appPspStickReport( Top, 768 );   // consumed here so the frame report shows play-time traffic only
+			debugf( NAME_Log, "PSPPERF: LoadMap stick by file: %s", Top );
+		}
 		// -IOCHECK: exercise the file layer's read paths against each other.
 		if( ParseParam( appCmdLine(), "IOCHECK" ) )
 		{
-			appPspIoCheck( "../Textures/SkyCity.utx" );
+			appPspIoCheck( "../Sounds/Ambmodern.uax" );
+			appPspIoCheck( "../Textures/PlayrShp.utx" );
 			appPspIoCheck( "../System/UnrealI.u" );
 		}
 		// -TEXCRC: checksum every texture and mesh the level load left
@@ -1287,18 +1296,67 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 	// saved level is running. Together they replay a crash from a save made
 	// just before it, without anyone at the controls.
 	{
-		static INT Slot = -1; static UBOOL Done = 0;
-		if( Slot < 0 ) { Slot = 0; Parse( appCmdLine(), "LOAD=", Slot ); }
-		if( Slot > 0 && !Done && GLevel )
+		static INT Slot = -2; static UBOOL Done = 0;
+		if( Slot == -2 ) { Slot = -1; if( !Parse( appCmdLine(), "LOAD=", Slot ) ) Slot = -1; }   // slot 0 is a real slot
+		if( Slot >= 0 && !Done && GLevel )
 		{
 			Done = 1;
 			char Cmd[64]; appSprintf( Cmd, "START ?load=%i", Slot );
 			debugf( NAME_Log, "PSPTEST: %s", Cmd );
 			Exec( Cmd, GSystem );
 		}
+		// -WALKDELAY=secs: let the post-load spike (first uploads, reloads)
+		// settle before the walk starts, so the event lands in a clean interval.
+		if( GPspAutoWalkPending > 0.f )
+		{
+			GPspAutoWalkDelay -= Min( DeltaSeconds, 0.1f );   // the tick after a load carries the whole load time
+			if( GPspAutoWalkDelay <= 0.f ) { GPspAutoWalkLeft = GPspAutoWalkPending; GPspAutoWalkPending = 0.f; GPspAutoWalkT0 = appSeconds(); debugf( NAME_Log, "PSPTEST: autowalk starts" ); }
+		}
+		// Every frame slower than 60 ms while the walk runs (and 20 s after): real
+		// wall-clock time, not the engine's clamped DeltaSeconds.
+		{
+			static DOUBLE LastT = 0.0; const DOUBLE Now = appSeconds();
+			extern CORE_API INT GPspFileRefills, GPspFileRefillBytes, GPspFileReopens, GPspFileSeeks; extern CORE_API SQWORD GPspFileIoCycles;
+			static SQWORD Io0 = 0; static DWORD Pre0 = 0, RelC0 = 0; static INT Refills0 = 0, Bytes0 = 0, Preloads0 = 0, Reloads0 = 0, Uploads0 = 0, Sounds0 = 0, Mesh0 = 0, Reopens0 = 0, Seeks0 = 0;
+			if( LastT > 0.0 && GPspAutoWalkT0 > 0.0 && Now - GPspAutoWalkT0 < 60.0 && Now - LastT > 0.06 && GLevel )
+			{
+				for( INT i = 0; i < GLevel->Num(); i++ )
+				{
+					APlayerPawn* P = Cast<APlayerPawn>( GLevel->Element(i) );
+					if( P && P->Player )
+					{
+						debugf( NAME_Log, "PSPTEST: slow frame %.0f ms at t+%.1f s, pawn (%.0f,%.0f,%.0f) physics %i | stick %.0f ms (%i reads %i KB, %i reopens %i seeks) linker %.0f ms (%i preloads) reloads %i (%.0f ms) uploads %i sounds %i meshreload +%i KB",
+							(FLOAT)( ( Now - LastT ) * 1000.0 ), (FLOAT)( Now - GPspAutoWalkT0 ), P->Location.X, P->Location.Y, P->Location.Z, (INT)P->Physics,
+							(FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspFileIoCycles - Io0 ) ), GPspFileRefills - Refills0, ( GPspFileRefillBytes - Bytes0 ) / 1024, GPspFileReopens - Reopens0, GPspFileSeeks - Seeks0,
+							(FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspPreloadCycles - Pre0 ) ), GPspCtrPreloads - Preloads0,
+							GPspCtrReloads - Reloads0, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspReloadCycles - RelC0 ) ), GPspCtrUploads - Uploads0, GPspCtrSounds - Sounds0, GPspMeshReloadKB - Mesh0 );
+						break;
+					}
+				}
+			}
+			LastT = Now;
+			Io0 = GPspFileIoCycles; Refills0 = GPspFileRefills; Bytes0 = GPspFileRefillBytes; Pre0 = GPspPreloadCycles; Preloads0 = GPspCtrPreloads;
+			Reloads0 = GPspCtrReloads; RelC0 = GPspReloadCycles; Uploads0 = GPspCtrUploads; Sounds0 = GPspCtrSounds; Mesh0 = GPspMeshReloadKB; Reopens0 = GPspFileReopens; Seeks0 = GPspFileSeeks;
+		}
 		if( GPspAutoWalkLeft > 0.f )
 		{
-			GPspAutoWalkLeft -= DeltaSeconds;
+			GPspAutoWalkLeft -= Min( DeltaSeconds, 0.1f );
+			static FLOAT Trace = 0.f; Trace += DeltaSeconds;
+			if( Trace >= 1.f && GLevel )
+			{
+				Trace = 0.f;
+				for( INT i = 0; i < GLevel->Num(); i++ )
+				{
+					APlayerPawn* P = Cast<APlayerPawn>( GLevel->Element(i) );
+					if( P && P->Player )
+					{
+						ALevelInfo* LI = GLevel->GetLevelInfo();
+						debugf( NAME_Log, "PSPTEST: pawn at (%.0f,%.0f,%.0f) vel %.0f physics %i state %s pauser '%s' timedil %.2f showmenu %i", P->Location.X, P->Location.Y, P->Location.Z, P->Velocity.Size(),
+							(INT)P->Physics, P->GetMainFrame() && P->GetMainFrame()->StateNode ? P->GetMainFrame()->StateNode->GetName() : "?", *LI->Pauser, LI->TimeDilation, (INT)P->bShowMenu );
+						break;
+					}
+				}
+			}
 			if( GPspAutoWalkLeft <= 0.f ) debugf( NAME_Log, "PSPTEST: autowalk finished" );
 		}
 	}

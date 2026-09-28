@@ -953,6 +953,9 @@ void UNOpenALAudioSubsystem::UnregisterMusic( UMusic* Music )
 void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 {
 	guard(UNOpenALAudioSubsystem::RegisterSound)
+#ifdef __PSP__
+	++GPspCtrSounds;
+#endif
 
 	if( Sound->Handle )
 		return;

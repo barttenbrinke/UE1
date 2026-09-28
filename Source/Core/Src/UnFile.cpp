@@ -366,6 +366,8 @@ CORE_API const char* appPspHeapState()
 static char* GPspHeapBase = NULL;
 CORE_API INT GPspMeshReloadKB = 0;
 CORE_API FLOAT GPspAutoWalkLeft = 0.f;
+CORE_API INT   GPspCtrReloads = 0, GPspCtrUploads = 0, GPspCtrSounds = 0, GPspCtrPreloads = 0;
+CORE_API DWORD GPspReloadCycles = 0, GPspPreloadCycles = 0;
 CORE_API INT appPspHeapUsedKB()
 {
 	return mallinfo().uordblks / 1024;
@@ -865,6 +867,8 @@ struct FPspFile
 	INT		NextRefill;		// bytes to read on the next window refill (adaptive)
 	BYTE*	Whole;			// the entire file, while a level load is in progress (see appPspLoadCacheBegin)
 	INT		WholeSize;
+	INT		BytesRead;		// stick bytes since the last appPspStickReport (per-file attribution)
+	INT		Reads;
 };
 
 // Memory Stick traffic, for the PSPPERF report: window refills and bytes.
@@ -1018,7 +1022,7 @@ static void PspWholeLoad( FPspFile* Slot )
 		Got += N;
 	}
 	Slot->KernelPos = Got;
-	++GPspFileRefills; GPspFileRefillBytes += Got;
+	++GPspFileRefills; GPspFileRefillBytes += Got; Slot->BytesRead += Got; ++Slot->Reads;
 	GPspFileIoCycles += (DWORD)( appCycles() - C0 );
 	if( Got != Size )
 	{
@@ -1072,6 +1076,7 @@ CORE_API FILE* appFopen( const char* Path, const char* Mode )
 	FPspFile* Slot = PspFileAlloc();
 	if( !Slot )
 		return NULL;
+	Slot->BytesRead = 0; Slot->Reads = 0;
 
 	INT Live = PspLiveHandles();
 	while( Live-- >= PSP_MAX_KERNEL_HANDLES )
@@ -1167,6 +1172,35 @@ CORE_API FILE* appFopen( const char* Path, const char* Mode )
 	return F;
 #endif
 }
+#ifdef __PSP__
+// Per-file stick traffic for the PSPPERF report: which packages a stretch of
+// play is really reading. Open files are tallied in their slots, files closed
+// since the last report in this small list.
+struct FPspStickTally { char Path[64]; INT Bytes; INT Reads; };
+static FPspStickTally GPspStickTally[64]; static INT GPspStickTallyNum = 0;
+static void PspStickTallyAdd( const char* Path, INT Bytes, INT Reads )
+{
+	const char* Name = strrchr( Path, '/' ); Name = Name ? Name + 1 : Path;
+	for( INT i = 0; i < GPspStickTallyNum; ++i )
+		if( !appStricmp( GPspStickTally[i].Path, Name ) ) { GPspStickTally[i].Bytes += Bytes; GPspStickTally[i].Reads += Reads; return; }
+	if( GPspStickTallyNum < 64 )
+	{
+		appStrncpy( GPspStickTally[GPspStickTallyNum].Path, Name, 64 );
+		GPspStickTally[GPspStickTallyNum].Bytes = Bytes; GPspStickTally[GPspStickTallyNum].Reads = Reads; ++GPspStickTallyNum;
+	}
+}
+CORE_API void appPspStickReport( char* Out, INT Max )
+{
+	for( INT i = 0; i < PSP_MAX_FILES; ++i )
+		if( GPspFiles[i].InUse && GPspFiles[i].BytesRead > 0 ) { PspStickTallyAdd( GPspFiles[i].Path, GPspFiles[i].BytesRead, GPspFiles[i].Reads ); GPspFiles[i].BytesRead = 0; GPspFiles[i].Reads = 0; }
+	for( INT i = 0; i < GPspStickTallyNum; ++i ) for( INT j = i + 1; j < GPspStickTallyNum; ++j ) if( GPspStickTally[j].Bytes > GPspStickTally[i].Bytes ) Exchange( GPspStickTally[i], GPspStickTally[j] );
+	INT Total = 0, Reads = 0; for( INT i = 0; i < GPspStickTallyNum; ++i ) { Total += GPspStickTally[i].Bytes; Reads += GPspStickTally[i].Reads; }
+	INT Len = appSprintf( Out, "%i files %i KB/%i reads:", GPspStickTallyNum, Total / 1024, Reads );
+	for( INT i = 0; i < Min( GPspStickTallyNum, 10 ) && Len < Max - 80; ++i )
+		Len += appSprintf( Out + Len, "%s %s %i KB/%i", i ? "," : "", GPspStickTally[i].Path, GPspStickTally[i].Bytes / 1024, GPspStickTally[i].Reads );
+	GPspStickTallyNum = 0;
+}
+#endif
 CORE_API INT appFclose( FILE* Stream )
 {
 #ifdef __PSP__
@@ -1175,6 +1209,8 @@ CORE_API INT appFclose( FILE* Stream )
 		return -1;
 	if( Slot->Fd >= 0 )
 		sceIoClose( Slot->Fd );
+	if( Slot->BytesRead > 0 ) PspStickTallyAdd( Slot->Path, Slot->BytesRead, Slot->Reads );
+	Slot->BytesRead = 0; Slot->Reads = 0;
 	Slot->Fd    = -1;
 	Slot->InUse = 0;
 	for( INT w = 0; w < PSP_FILE_WINDOWS; ++w )
@@ -1325,6 +1361,7 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 				break;
 			}
 			Out += N; Slot->FilePos += N; Slot->KernelPos += N; Want -= N; Got += N;
+			GPspFileRefillBytes += N; Slot->BytesRead += N; ++Slot->Reads;   // direct reads count as stick traffic too
 			continue;
 		}
 		// Refill a window at the current position: the least recently used
@@ -1367,7 +1404,7 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 		int N = sceIoRead( Slot->Fd, W.Buf, Slot->NextRefill );
 		GPspFileIoCycles += (DWORD)( appCycles() - C0 );
 		++GPspFileRefills;
-		if( N > 0 ) GPspFileRefillBytes += N;
+		if( N > 0 ) { GPspFileRefillBytes += N; Slot->BytesRead += N; ++Slot->Reads; }
 		if( N <= 0 )
 		{
 			if( N < 0 )
@@ -1432,6 +1469,46 @@ CORE_API void appPspIoCheck( const char* Filename )
 	Bad = 0; for( INT i = 0; i < Len - 4096; i += 64 ) if( appMemcmp( Ref + 4096 + i, Dirty + i, 64 ) ) ++Bad;
 	debugf( NAME_Log, "PSPIOCHECK: direct read over a CPU-read buffer (shifted 4 KB) got %i, %i lines differ", Got, Bad );
 	free( Ref ); free( Dirty ); appFree( Win - 3 ); appFclose( F );
+	// Cost model: seek+read 8 KB at random far offsets vs. sequential, and a
+	// close+open, straight through the kernel (no windows), so the play-time
+	// stalls (60 ms per small read after a seek) can be pinned on the driver.
+	{
+		BYTE* B = (BYTE*)memalign( 64, 8192 );
+		SceUID Fd = sceIoOpen( PspFullPath( Filename ), PSP_O_RDONLY, 0777 );
+		if( B && Fd >= 0 )
+		{
+			DWORD Seed = 777; DOUBLE T0, Tot;
+			Tot = 0; for( INT k = 0; k < 20; ++k ) { Seed = Seed * 1664525u + 1013904223u; const INT P = (INT)( ( Seed % (DWORD)( Size - 8192 ) ) & ~63 ); T0 = appSeconds(); sceIoLseek32( Fd, P, PSP_SEEK_SET ); sceIoRead( Fd, B, 8192 ); Tot += appSeconds() - T0; }
+			debugf( NAME_Log, "PSPIOCHECK: %s random seek+read 8 KB: %.1f ms each", Filename, (FLOAT)( Tot * 1000.0 / 20 ) );
+			Tot = 0; for( INT k = 0; k < 20; ++k ) { T0 = appSeconds(); sceIoLseek32( Fd, 4 * 1024 * 1024 + k * 8192, PSP_SEEK_SET ); sceIoRead( Fd, B, 8192 ); Tot += appSeconds() - T0; }
+			debugf( NAME_Log, "PSPIOCHECK: %s sequential seek+read 8 KB at 4 MB: %.1f ms each", Filename, (FLOAT)( Tot * 1000.0 / 20 ) );
+			Tot = 0; for( INT k = 0; k < 20; ++k ) { T0 = appSeconds(); sceIoLseek32( Fd, 64 * 1024 + k * 8192, PSP_SEEK_SET ); sceIoRead( Fd, B, 8192 ); Tot += appSeconds() - T0; }
+			debugf( NAME_Log, "PSPIOCHECK: %s sequential seek+read 8 KB near start: %.1f ms each", Filename, (FLOAT)( Tot * 1000.0 / 20 ) );
+			Tot = 0; for( INT k = 0; k < 10; ++k ) { const INT P = ( k & 1 ) ? Size - 65536 : 65536; T0 = appSeconds(); sceIoLseek32( Fd, P, PSP_SEEK_SET ); sceIoRead( Fd, B, 8192 ); Tot += appSeconds() - T0; }
+			debugf( NAME_Log, "PSPIOCHECK: %s alternating start/end seek+read 8 KB: %.1f ms each", Filename, (FLOAT)( Tot * 1000.0 / 10 ) );
+			Tot = 0; for( INT k = 0; k < 5; ++k ) { T0 = appSeconds(); sceIoClose( Fd ); Fd = sceIoOpen( PspFullPath( Filename ), PSP_O_RDONLY, 0777 ); Tot += appSeconds() - T0; }
+			debugf( NAME_Log, "PSPIOCHECK: %s close+open: %.1f ms each", Filename, (FLOAT)( Tot * 1000.0 / 5 ) );
+			Tot = 0; for( INT k = 0; k < 10; ++k ) { T0 = appSeconds(); sceIoLseek32( Fd, Size - 65536 - k * 8192, PSP_SEEK_SET ); sceIoRead( Fd, B, 1024 ); Tot += appSeconds() - T0; }
+			debugf( NAME_Log, "PSPIOCHECK: %s far seek+read 1 KB (backwards): %.1f ms each", Filename, (FLOAT)( Tot * 1000.0 / 10 ) );
+		}
+		// Odd lengths and offsets, as the direct path issues them for sound
+		// samples and texels (Want bytes, whatever the object size is).
+		BYTE* Big = (BYTE*)memalign( 64, 256 * 1024 );
+		if( Big && Fd >= 0 )
+		{
+			static const INT Lens[] = { 65536, 65537, 30011, 70001, 200003, 8192 };
+			for( INT t = 0; t < 6; ++t )
+			{
+				DOUBLE T0, Tot = 0; for( INT k = 0; k < 8; ++k ) { T0 = appSeconds(); sceIoLseek32( Fd, 1024 * 1024 + k * 300000 + ( t == 5 ? 37 : 0 ), PSP_SEEK_SET ); sceIoRead( Fd, Big + ( t == 5 ? 0 : 0 ), Lens[t] ); Tot += appSeconds() - T0; }
+				debugf( NAME_Log, "PSPIOCHECK: %s seek+read %i bytes%s: %.1f ms each", Filename, Lens[t], t == 5 ? " from an odd offset" : "", (FLOAT)( Tot * 1000.0 / 8 ) );
+			}
+			DOUBLE T0, Tot = 0; for( INT k = 0; k < 8; ++k ) { T0 = appSeconds(); sceIoLseek32( Fd, 1024 * 1024 + k * 300000, PSP_SEEK_SET ); sceIoRead( Fd, Big + 4, 8192 ); Tot += appSeconds() - T0; }
+			debugf( NAME_Log, "PSPIOCHECK: %s seek+read 8192 into an unaligned buffer: %.1f ms each", Filename, (FLOAT)( Tot * 1000.0 / 8 ) );
+		}
+		if( Big ) free( Big );
+		if( Fd >= 0 ) sceIoClose( Fd );
+		if( B ) free( B );
+	}
 }
 #endif
 CORE_API INT appFerror( FILE* F )

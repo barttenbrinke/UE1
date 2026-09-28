@@ -808,6 +808,12 @@ class ULinkerLoad : public ULinker, public FArchiveFileLoad
 			// Preload the object if necessary.
 			if( Object->GetFlags() & RF_NeedLoad )
 			{
+#ifdef __PSP__
+				// On-demand loading during play (classes, defaults, reloads):
+				// outermost calls only, for the slow-frame log.
+				static INT Depth = 0; const DWORD C0 = appCycles(); ++Depth; ++GPspCtrPreloads;
+				struct FPreloadTimer { INT& D; DWORD C; ~FPreloadTimer() { if( --D == 0 ) GPspPreloadCycles += (DWORD)( appCycles() - C ); } } PreloadTimer = { Depth, C0 };
+#endif
 				// Load the local object now.
 				Object->GetLinker()->LoadObject( Object );
 			}
