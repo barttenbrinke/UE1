@@ -531,7 +531,9 @@ void URender::DrawMesh
 		// Entries live in GCache under the actor; the key is compared whole.
 		struct FPspMeshLightKey { UMesh* Mesh; INT Seq; FLOAT AnimFrame; FVector Loc; FRotator Rot; FLOAT Scale; DWORD Sig; DWORD Flags; INT Verts; };
 		BYTE* LitCache = NULL; FCacheItem* LitItem = NULL;
-		if( !(ExtraFlags & (PF_RenderFog|PF_Unlit|PF_Selected)) && !Fatten && !GIsEditor )
+		static INT UseLightCache = -1;
+		if( UseLightCache < 0 ) { UseLightCache = 1; GetConfigInt( "PSP", "MeshLightCache", UseLightCache ); Parse( appCmdLine(), "MESHLIGHTCACHE=", UseLightCache ); }
+		if( UseLightCache && !(ExtraFlags & (PF_RenderFog|PF_Unlit|PF_Selected)) && !Fatten && !GIsEditor )
 		{
 			FPspMeshLightKey Key; appMemset( &Key, 0, sizeof(Key) );
 			Key.Mesh = Mesh; Key.Seq = Owner->AnimSequence.GetIndex(); Key.AnimFrame = Owner->AnimFrame; Key.Loc = Owner->Location + Owner->PrePivot; Key.Rot = Owner->Rotation;
@@ -647,7 +649,7 @@ void URender::DrawMesh
 		// half-widths outside still goes the fast way. 17% of a corridor's
 		// triangles used to fall back, at 2 ms a frame.
 		static FLOAT GuardBand = -1.f;
-		if( GuardBand < 0.f ) { INT Pct = 300; GetConfigInt( "PSP", "MeshGuardBand", Pct ); GuardBand = Clamp( Pct, 100, 700 ) / 100.f; }
+		if( GuardBand < 0.f ) { INT Pct = 300; GetConfigInt( "PSP", "MeshGuardBand", Pct ); Parse( appCmdLine(), "MESHGUARD=", Pct ); GuardBand = Clamp( Pct, 100, 700 ) / 100.f; }
 		const FLOAT RProjZ = appTan( Frame->Viewport->Actor->FovAngle * PI / 360.0 );
 		const FLOAT GBX = GuardBand * RProjZ, GBY = GuardBand * RProjZ * Frame->FY2 / Frame->FX2;
 		if( !( Frame->NearClip.W == 0.0 && Frame->Mirror != -1 && !(ExtraFlags & PF_Environment) ) )

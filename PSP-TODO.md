@@ -47,6 +47,40 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       array would then be NULL -- untested, left alone.
       The dynamic-texture copy ring (three slots -> 512 KB byte ring) was
       a real but separate hazard and stays.
+- [x] Level-change memory (2026-09-28 evening, PPSSPP -MAPCYCLE sweep):
+      after the mixer/prefetch work, Dig no longer loaded after NyLeve and
+      SkyTown not after Chizra. Three causes, all fixed:
+      - The previous level's prefetched meshes (5 MB) and registered
+        sounds (2 MB) survived the level change: the class packages keep
+        the objects alive, so GC leaves their data. Dropped at the
+        hop-through-Entry point (PspMeshDropAll + UnregisterSound for
+        every USound); the eviction path also freed nothing (Empty()
+        without Shrink()).
+      - The loader's transient buffers (whole copies of small packages,
+        16 read windows per file) were heap allocations interleaved with
+        the level's arrays: up to 10 MB during a load. They now live in
+        static pools (2 MB whole-file bump pool reset at load end, 64
+        windows of 16 KB), LoadCacheTotalMB 2, LoadCacheHeapMB 20,
+        LoadWindowsKB 1024. A failed malloc/realloc during a load drops
+        the load cache and retries before erroring.
+      - Fragmentation proper: a level's few multi-megabyte arrays (BSP
+        verts 4 MB, nodes 2 MB, vertex pool, surfaces; up to 12 MB in
+        Chizra) shared the heap with thousands of small objects, the
+        arena cannot grow past ~46 MB, and SkyTown's 4 MB vertex array
+        found no room with 8-14 MB free. Blocks of 512 KB and up now come
+        from a fixed 12 MB region (first-fit, coalescing on free, heap
+        fallback when full) -- appMalloc/appRealloc/appFree in UnFile.cpp.
+        appPspHeapUsedKB counts it. The tracker's malloc_usable_size
+        probe must skip region pointers (that hung the first attempt).
+      Result: DmRadikus -> NyLeve -> Dig -> Chizra -> SkyTown -> ... three
+      laps in the emulator, heap arena never above 29 MB (+ up to 10 MB in
+      the region). Hardware not yet run with this build.
+- [ ] Tools added today: -SHOTAT=secs -SHOTNAME=label writes
+      System/shot-<label>.ppm from glReadPixels (works in PPSSPP and on
+      the card; scratchpad/ppmdiff.py compares two), -MESHLIGHTCACHE=0/1,
+      -MESHGUARD=pct. Screen captures of the emulator window do not work
+      from this session (System Events not authorised; full-screen grabs
+      hit the wrong display).
 - [ ] Vortex Rikers collapsing-floor sequence (save slot 0, 2026-09-28),
       replayed on the card with `-LOAD=0 -WALKDELAY=15 -AUTOWALK=12`.
       What happens: the trigger tilts the floor, an Earthquake actor

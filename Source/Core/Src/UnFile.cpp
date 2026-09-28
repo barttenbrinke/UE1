@@ -252,6 +252,77 @@ CORE_API void appDumpAllocs( FOutputDevice* Out )
 // asks the chunk header for the size first), a spinlock covers the mixer
 // thread.
 struct FPspBigBlock { void* Ptr; INT Size; char Tag[40]; };
+#ifdef __PSP__
+//
+// Large-block region. A level's few multi-megabyte arrays (BSP verts and
+// nodes, vertex pool, surfaces: up to 12 MB in Chizra) used to share the
+// heap with thousands of small objects. The previous level left its holes,
+// the next level's small allocations split them, and the one 4 MB array
+// then found no room while 8-14 MB were "free" -- SkyTown after Chizra died
+// that way, and the arena cannot grow past the PSP's ~46 MB. Blocks of
+// PSP_REGION_MIN and up now come from this fixed region, first-fit with
+// coalescing on free; it holds a handful of blocks that are all released
+// together at a level change, so it does not fragment. When it is full the
+// request falls back to the heap.
+//
+enum { PSP_BIG_REGION = 12 * 1024 * 1024, PSP_REGION_MIN = 512 * 1024, PSP_BIG_CHUNKS = 96 };
+static BYTE GPspBigRegion[PSP_BIG_REGION] __attribute__((aligned(64)));
+struct FPspRegionChunk { INT Off; INT Size; };            // used chunks, sorted by Off
+static FPspRegionChunk GPspRegionChunks[PSP_BIG_CHUNKS];
+static INT GPspRegionNum = 0, GPspRegionUsed = 0, GPspRegionFallbacks = 0;
+static inline UBOOL PspInBigRegion( const void* P ) { return (const BYTE*)P >= GPspBigRegion && (const BYTE*)P < GPspBigRegion + PSP_BIG_REGION; }
+static INT PspRegionFind( const void* P )
+{
+	const INT Off = (INT)( (const BYTE*)P - GPspBigRegion );
+	for( INT i = 0; i < GPspRegionNum; ++i ) if( GPspRegionChunks[i].Off == Off ) return i;
+	return -1;
+}
+static void* PspBigRegionAlloc( INT Size )
+{
+	if( GPspRegionNum >= PSP_BIG_CHUNKS ) return NULL;
+	Size = ( Size + 63 ) & ~63;
+	INT Prev = 0;
+	for( INT i = 0; i <= GPspRegionNum; ++i )
+	{
+		const INT End = ( i < GPspRegionNum ) ? GPspRegionChunks[i].Off : PSP_BIG_REGION;
+		if( End - Prev >= Size )
+		{
+			for( INT k = GPspRegionNum; k > i; --k ) GPspRegionChunks[k] = GPspRegionChunks[k-1];
+			GPspRegionChunks[i].Off = Prev; GPspRegionChunks[i].Size = Size; ++GPspRegionNum; GPspRegionUsed += Size;
+			return GPspBigRegion + Prev;
+		}
+		if( i < GPspRegionNum ) Prev = GPspRegionChunks[i].Off + GPspRegionChunks[i].Size;
+	}
+	return NULL;
+}
+static void PspBigRegionFree( void* P )
+{
+	const INT i = PspRegionFind( P );
+	if( i < 0 ) return;
+	GPspRegionUsed -= GPspRegionChunks[i].Size;
+	for( INT k = i; k < GPspRegionNum - 1; ++k ) GPspRegionChunks[k] = GPspRegionChunks[k+1];
+	--GPspRegionNum;
+}
+static void* PspBigRegionRealloc( void* P, INT NewSize )
+{
+	const INT i = PspRegionFind( P );
+	if( i < 0 ) return NULL;
+	const INT Rounded = ( NewSize + 63 ) & ~63;
+	const INT Next = ( i + 1 < GPspRegionNum ) ? GPspRegionChunks[i+1].Off : PSP_BIG_REGION;
+	if( GPspRegionChunks[i].Off + Rounded <= Next )
+	{
+		GPspRegionUsed += Rounded - GPspRegionChunks[i].Size; GPspRegionChunks[i].Size = Rounded;   // grows or shrinks in place
+		return P;
+	}
+	const INT Old = GPspRegionChunks[i].Size;
+	void* Q = PspBigRegionAlloc( NewSize );   // note: may shift the table; refind below
+	if( !Q ) return NULL;
+	appMemcpy( Q, P, Min( Old, NewSize ) );
+	PspBigRegionFree( P );
+	return Q;
+}
+CORE_API INT appPspBigRegionUsedKB() { return GPspRegionUsed / 1024; }
+#endif
 enum { PSP_BIG_MIN = 65536, PSP_BIG_MAX = 768 };
 static FPspBigBlock GPspBig[PSP_BIG_MAX];
 static INT GPspBigNum = 0;
@@ -274,7 +345,7 @@ static void PspBigAdd( void* Ptr, INT Size, const char* Tag )
 }
 static void PspBigRemove( void* Ptr )
 {
-	if( !Ptr || !GPspBigNum || malloc_usable_size( Ptr ) < PSP_BIG_MIN ) return;
+	if( !Ptr || !GPspBigNum || ( !PspInBigRegion( Ptr ) && malloc_usable_size( Ptr ) < PSP_BIG_MIN ) ) return;   // usable_size is undefined for region blocks
 	PspBigLock();
 	for( INT i = 0; i < GPspBigNum; ++i )
 		if( GPspBig[i].Ptr == Ptr ) { GPspBig[i] = GPspBig[--GPspBigNum]; break; }
@@ -369,9 +440,10 @@ CORE_API FLOAT GPspAutoWalkLeft = 0.f;
 CORE_API INT   GPspCtrReloads = 0, GPspCtrUploads = 0, GPspCtrSounds = 0, GPspCtrPreloads = 0;
 CORE_API DWORD GPspReloadCycles = 0, GPspPreloadCycles = 0;
 CORE_API DWORD GPspSoundRegCycles = 0, GPspTickCycles = 0, GPspDrawCycles = 0, GPspAudioCycles = 0;
+CORE_API INT appPspBigRegionUsedKB();
 CORE_API INT appPspHeapUsedKB()
 {
-	return mallinfo().uordblks / 1024;
+	return mallinfo().uordblks / 1024 + appPspBigRegionUsedKB();   // the large-block region counts as used heap
 }
 CORE_API INT appPspArenaKB()
 {
@@ -379,6 +451,10 @@ CORE_API INT appPspArenaKB()
 	if( !GPspHeapBase || Brk < GPspHeapBase ) GPspHeapBase = Brk;
 	return (INT)( ( Brk - GPspHeapBase ) / 1024 );
 }
+#endif
+#ifdef __PSP__
+extern UBOOL GPspLoadCache;   // defined with the file layer below
+
 #endif
 CORE_API void* appMalloc( INT Size, const char* Tag )
 {
@@ -391,9 +467,21 @@ CORE_API void* appMalloc( INT Size, const char* Tag )
 #ifdef __PSP__
 	PspLowMemoryCheck( Size );
 #endif
+#ifdef __PSP__
+	void* Ptr = NULL;
+	if( Size >= PSP_REGION_MIN ) { Ptr = PspBigRegionAlloc( Size ); if( !Ptr ) ++GPspRegionFallbacks; }
+	if( !Ptr ) Ptr = malloc( Size );
+#else
 	void* Ptr = malloc( Size );
+#endif
 	check(Ptr);
 #ifdef __PSP__
+	if( !Ptr && Size > 0 && GPspLoadCache )
+	{
+		INT Files = 0, KB = 0; appPspLoadCacheEnd( Files, KB );   // see appRealloc
+		debugf( NAME_Log, "PSPLOAD: %i-byte malloc (%s) failed; dropped the load cache (%i files, %i KB) and retrying", Size, Tag ? Tag : "?", Files, KB );
+		Ptr = malloc( Size );
+	}
 	// check() is compiled out in release; a silent NULL here surfaced as a
 	// null-pointer crash deep inside level loading. Fail loudly instead.
 	if( !Ptr )
@@ -421,6 +509,7 @@ CORE_API void appFree( void* Ptr )
 #endif
 #ifdef __PSP__
 	PspBigRemove( Ptr );
+	if( PspInBigRegion( Ptr ) ) { PspBigRegionFree( Ptr ); return; }
 #endif
 
 	free( Ptr );
@@ -470,6 +559,7 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 	{
 #ifdef __PSP__
 		PspBigRemove( Ptr );
+		if( PspInBigRegion( Ptr ) ) { PspBigRegionFree( Ptr ); return NULL; }
 #endif
 		free( Ptr );
 		return NULL;
@@ -479,7 +569,41 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 	{
 		PspLowMemoryCheck( NewSize );
 		PspBigRemove( Ptr );
-		void* Result = realloc( Ptr, NewSize );
+		void* Result = NULL;
+		if( Ptr && PspInBigRegion( Ptr ) )
+		{
+			Result = PspBigRegionRealloc( Ptr, NewSize );
+			if( !Result )
+			{
+				// Region full: move it to the heap.
+				const INT i = PspRegionFind( Ptr ); const INT Old = i >= 0 ? GPspRegionChunks[i].Size : 0;
+				Result = malloc( NewSize );
+				if( Result ) { appMemcpy( Result, Ptr, Min( Old, NewSize ) ); PspBigRegionFree( Ptr ); ++GPspRegionFallbacks; }
+			}
+		}
+		else if( !Ptr && NewSize >= PSP_REGION_MIN )
+		{
+			Result = PspBigRegionAlloc( NewSize );
+			if( !Result ) { ++GPspRegionFallbacks; Result = malloc( NewSize ); }
+		}
+		else if( Ptr && NewSize >= PSP_REGION_MIN )
+		{
+			// A heap block growing past the threshold moves into the region.
+			Result = PspBigRegionAlloc( NewSize );
+			if( Result ) { appMemcpy( Result, Ptr, Min( (INT)malloc_usable_size( Ptr ), NewSize ) ); free( Ptr ); }
+			else Result = realloc( Ptr, NewSize );
+		}
+		else
+			Result = realloc( Ptr, NewSize );
+		if( !Result && NewSize > 0 && GPspLoadCache )
+		{
+			// The load cache (whole small packages, extra read windows) is
+			// only a speed-up: give its memory back and try again before
+			// declaring the level too big. SkyTown's 4 MB vertex array hit this.
+			INT Files = 0, KB = 0; appPspLoadCacheEnd( Files, KB );
+			debugf( NAME_Log, "PSPLOAD: %i-byte realloc (%s) failed; dropped the load cache (%i files, %i KB) and retrying", NewSize, Tag ? Tag : "?", Files, KB );
+			Result = realloc( Ptr, NewSize );
+		}
 		if( !Result && NewSize > 0 )
 		{
 			PspDumpObjectsOnce();
@@ -884,8 +1008,36 @@ CORE_API SQWORD GPspFileIoCycles = 0;
 // [PSP] LoadCacheMB are read whole, sequentially, and served from memory;
 // the buffers go at the end of the load.  [PSP] LoadCacheHeapMB caps the
 // heap they may push to.
-static UBOOL GPspLoadCache = 0;
+UBOOL GPspLoadCache = 0;   // not static: the allocators above consult it (retry after dropping the cache)
 static INT   GPspLoadCacheFiles = 0, GPspLoadCacheKB = 0;
+static INT   GPspLoadCacheTotalKB = 2 * 1024;
+// The loader's transient buffers live in static pools, not the heap: whole
+// copies of small packages and the extra read windows used to interleave
+// with a level's multi-megabyte arrays and fragment the arena, which cannot
+// grow past ~46 MB -- Chizra's 4 MB vertex array then failed with 14 MB
+// free. Whole copies are a bump allocation reset when the load ends;
+// windows come from a fixed set with a used flag (heap fallback if it runs
+// out, which the cap makes rare).
+enum { PSP_WHOLE_POOL_BYTES = 2 * 1024 * 1024, PSP_WIN_POOL = 64 };   // 3 MB of BSS: every byte here is a byte less of heap ceiling (SkyTown needs ~34 MB)
+static BYTE  GPspWholePool[PSP_WHOLE_POOL_BYTES] __attribute__((aligned(64)));
+static INT   GPspWholePoolPos = 0;
+static BYTE  GPspWinPool[PSP_WIN_POOL][PSP_FILE_BUFSZ] __attribute__((aligned(64)));
+static BYTE  GPspWinPoolUsed[PSP_WIN_POOL];
+static INT   GPspWinAllocated = 0, GPspWinCapKB = -1;
+static BYTE* PspWinAlloc()
+{
+	for( INT i = 0; i < PSP_WIN_POOL; ++i )
+		if( !GPspWinPoolUsed[i] ) { GPspWinPoolUsed[i] = 1; return GPspWinPool[i]; }
+	return (BYTE*)memalign( 64, PSP_FILE_BUFSZ );
+}
+static void PspWinFree( BYTE* Buf )
+{
+	if( Buf >= GPspWinPool[0] && Buf < GPspWinPool[0] + sizeof(GPspWinPool) )
+		GPspWinPoolUsed[ ( Buf - GPspWinPool[0] ) / PSP_FILE_BUFSZ ] = 0;
+	else
+		free( Buf );
+}
+static inline UBOOL PspWholeInPool( const BYTE* P ) { return P >= GPspWholePool && P < GPspWholePool + PSP_WHOLE_POOL_BYTES; }
 static INT   GPspLoadCacheMaxKB = -1, GPspLoadCacheHeapKB = 0;
 
 // Move the kernel handle only when it is not already in the right place.
@@ -994,17 +1146,19 @@ static void PspWholeLoad( FPspFile* Slot )
 		return;
 	if( GPspLoadCacheMaxKB < 0 )
 	{
-		INT MB = 2, HeapMB = 30;   // UnrealI.u is 37 MB and the texture packages 5-13 MB: only the small ones go whole
+		INT MB = 2, HeapMB = 20, TotalMB = 2;   // UnrealI.u is 37 MB and the texture packages 5-13 MB: only the small ones go whole
 		GetConfigInt( "PSP", "LoadCacheMB", MB );
-		GetConfigInt( "PSP", "LoadCacheHeapMB", HeapMB );
+		GetConfigInt( "PSP", "LoadCacheHeapMB", HeapMB );     // was 30: with the level's own data on top, Dig after NyLeve ran the heap dry
+		GetConfigInt( "PSP", "LoadCacheTotalMB", TotalMB );   // whole copies alive at once
 		GPspLoadCacheMaxKB  = MB * 1024;
 		GPspLoadCacheHeapKB = HeapMB * 1024;
+		GPspLoadCacheTotalKB = TotalMB * 1024;
 	}
 	if( GPspLoadCacheMaxKB <= 0 || PspEnsureOpen( Slot ) < 0 )
 		return;
 	const DWORD C0 = appCycles();
 	const INT Size = (INT)sceIoLseek32( Slot->Fd, 0, PSP_SEEK_END );
-	if( Size <= 0 || Size / 1024 > GPspLoadCacheMaxKB || appPspHeapUsedKB() + Size / 1024 > GPspLoadCacheHeapKB )
+	if( Size <= 0 || Size / 1024 > GPspLoadCacheMaxKB || appPspHeapUsedKB() + Size / 1024 > GPspLoadCacheHeapKB || GPspLoadCacheKB + Size / 1024 > GPspLoadCacheTotalKB )
 	{
 		if( Size > 0 )
 			debugf( NAME_Log, "PSPLOAD: not cached %s (%i KB; heap %i KB)", Slot->Path, Size / 1024, appPspHeapUsedKB() );
@@ -1012,12 +1166,16 @@ static void PspWholeLoad( FPspFile* Slot )
 		GPspFileIoCycles += (DWORD)( appCycles() - C0 );
 		return;
 	}
-	BYTE* Buf = (BYTE*)malloc( Size );
-	if( !Buf )
+	const INT Rounded = ( Size + 63 ) & ~63;
+	if( GPspWholePoolPos + Rounded > PSP_WHOLE_POOL_BYTES )
 	{
+		debugf( NAME_Log, "PSPLOAD: not cached %s (%i KB; pool full)", Slot->Path, Size / 1024 );
 		Slot->KernelPos = Size;
+		GPspFileIoCycles += (DWORD)( appCycles() - C0 );
 		return;
 	}
+	BYTE* Buf = GPspWholePool + GPspWholePoolPos;
+	GPspWholePoolPos += Rounded;
 	sceIoLseek32( Slot->Fd, 0, PSP_SEEK_SET );
 	INT Got = 0;
 	while( Got < Size )
@@ -1031,7 +1189,7 @@ static void PspWholeLoad( FPspFile* Slot )
 	GPspFileIoCycles += (DWORD)( appCycles() - C0 );
 	if( Got != Size )
 	{
-		free( Buf );
+		GPspWholePoolPos -= Rounded;   // the last bump: hand it back
 		return;
 	}
 	Slot->Whole = Buf; Slot->WholeSize = Size;
@@ -1056,14 +1214,15 @@ CORE_API void appPspLoadCacheEnd( INT& Files, INT& KB )
 	{
 		FPspFile* Slot = &GPspFiles[i];
 		for( INT w = 1; w < PSP_FILE_WINDOWS; ++w )   // back to one window per file while playing
-			if( Slot->Win[w].Buf ) { free( Slot->Win[w].Buf ); Slot->Win[w].Buf = NULL; Slot->Win[w].Len = 0; }
+			if( Slot->Win[w].Buf ) { PspWinFree( Slot->Win[w].Buf ); Slot->Win[w].Buf = NULL; Slot->Win[w].Len = 0; --GPspWinAllocated; }
 	}
 	for( INT i = 0; i < PSP_MAX_FILES; i++ )
 		if( GPspFiles[i].Whole )
 		{
-			free( GPspFiles[i].Whole );
+			if( !PspWholeInPool( GPspFiles[i].Whole ) ) free( GPspFiles[i].Whole );
 			GPspFiles[i].Whole = NULL; GPspFiles[i].WholeSize = 0;
 		}
+	GPspWholePoolPos = 0;
 }
 
 #endif
@@ -1219,10 +1378,10 @@ CORE_API INT appFclose( FILE* Stream )
 	Slot->Fd    = -1;
 	Slot->InUse = 0;
 	for( INT w = 0; w < PSP_FILE_WINDOWS; ++w )
-		if( Slot->Win[w].Buf ) { free( Slot->Win[w].Buf ); Slot->Win[w].Buf = NULL; Slot->Win[w].Len = 0; }
+		if( Slot->Win[w].Buf ) { PspWinFree( Slot->Win[w].Buf ); Slot->Win[w].Buf = NULL; Slot->Win[w].Len = 0; --GPspWinAllocated; }
 	if( Slot->Whole )
 	{
-		free( Slot->Whole );
+		if( !PspWholeInPool( Slot->Whole ) ) free( Slot->Whole );
 		Slot->Whole = NULL; Slot->WholeSize = 0;
 	}
 	return 0;
@@ -1399,11 +1558,21 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 			if( !Slot->Win[w].Buf ) { Victim = w; break; }
 			if( Victim < 0 || Slot->Win[w].Use < Slot->Win[Victim].Use ) Victim = w;
 		}
+		if( GPspWinCapKB < 0 ) { GPspWinCapKB = 1024; GetConfigInt( "PSP", "LoadWindowsKB", GPspWinCapKB ); }
+		if( !Slot->Win[Victim].Buf && GPspWinAllocated * ( PSP_FILE_BUFSZ / 1024 ) >= GPspWinCapKB )
+		{
+			// Pool exhausted: fall back to this file's least recently used window, if it has one.
+			INT Have = -1;
+			for( INT w = 0; w < MaxWin; ++w )
+				if( Slot->Win[w].Buf && ( Have < 0 || Slot->Win[w].Use < Slot->Win[Have].Use ) ) Have = w;
+			if( Have >= 0 ) Victim = Have;
+		}
 		FPspFile::FWin& W = Slot->Win[Victim];
 		if( !W.Buf )
 		{
-			W.Buf = (BYTE*)memalign( 64, PSP_FILE_BUFSZ );
+			W.Buf = PspWinAlloc();
 			if( !W.Buf ) { Slot->Error = 1; break; }
+			++GPspWinAllocated;
 		}
 		if( PspEnsureOpen( Slot ) < 0 || PspSeekTo( Slot, Slot->FilePos ) < 0 )
 			break;

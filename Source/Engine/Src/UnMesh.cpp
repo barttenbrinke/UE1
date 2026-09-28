@@ -213,8 +213,29 @@ static void PspMeshResident( UMesh* Mesh, INT Bytes )
 		UMesh* Victim = GPspMeshRecs(Best).Mesh;
 		GPspMeshResident -= GPspMeshRecs(Best).Bytes;
 		GPspMeshRecs.Remove( Best );
-		Victim->Verts.Empty(); Victim->Tris.Empty(); Victim->Connects.Empty(); Victim->VertLinks.Empty();
+		Victim->Verts.Empty(); Victim->Verts.Shrink(); Victim->Tris.Empty(); Victim->Tris.Shrink();   // Empty() alone keeps the allocation
+		Victim->Connects.Empty(); Victim->Connects.Shrink(); Victim->VertLinks.Empty(); Victim->VertLinks.Shrink();
 	}
+}
+// Level change: drop every mesh's render data. The classes that reference
+// them (weapons, monsters) stay loaded across levels, so without this the
+// previous level's prefetched meshes (4 MB in a bot match) survived into the
+// next one and Dig would not load after NyLeve. The next level prefetches
+// what it needs again.
+ENGINE_API INT PspMeshDropAll()
+{
+	INT KB = 0;
+	for( TObjectIterator<UMesh> It; It; ++It )
+	{
+		if( !It->GetLinker() || !It->Verts.Num() || It->FrameVerts <= 0 )
+			continue;
+		KB += ( It->Verts.Num() * sizeof(FMeshVert) + It->Tris.Num() * sizeof(FMeshTri) + It->Connects.Num() * sizeof(FMeshVertConnect) + It->VertLinks.Num() * sizeof(INT) ) / 1024;
+		It->Verts.Empty(); It->Verts.Shrink(); It->Tris.Empty(); It->Tris.Shrink();
+		It->Connects.Empty(); It->Connects.Shrink(); It->VertLinks.Empty(); It->VertLinks.Shrink();
+	}
+	GPspMeshRecs.Empty(); GPspMeshRecs.Shrink();
+	GPspMeshResident = 0;
+	return KB;
 }
 UBOOL UMesh::PspPrefetch()
 {

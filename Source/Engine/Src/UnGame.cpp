@@ -412,7 +412,22 @@ UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 			debugf( NAME_Log, "PSP: releasing %s before loading %s", GLevel->GetPathName(), *URL.Map );
 			if( !LoadMap( FURL( &LastURL, "Entry", TRAVEL_Partial ), NULL, Error256 ) )
 				return 0;
+			// Data the last level prefetched or played lives on objects the
+			// class packages keep alive, so garbage collection alone leaves
+			// it: the previous level's meshes (4 MB in a bot match) and its
+			// registered sounds (2 MB) survived into the next one, and Dig no
+			// longer loaded after NyLeve. Drop both; the new level prefetches.
+			{
+				extern ENGINE_API INT PspMeshDropAll();
+				const INT MeshKB = PspMeshDropAll();
+				INT Sounds = 0;
+				if( Audio )
+					for( TObjectIterator<USound> It; It; ++It )
+						if( It->Handle ) { Audio->UnregisterSound( *It ); ++Sounds; }
+				debugf( NAME_Log, "PSP: dropped %i KB of mesh data and %i registered sounds before the load", MeshKB, Sounds );
+			}
 			GObj.CollectGarbage( GSystem, RF_Intrinsic );
+			debugf( NAME_Log, "PSP: released; %s", appPspHeapState() );
 		}
 #endif
 		return LoadMap( URL, NULL, Error256 )!=NULL;

@@ -830,6 +830,52 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 	guard(UNOpenGLRenderDevice::Unlock);
 
 	glFlush();
+#ifdef __PSP__
+	// -SHOTAT=secs [-SHOTNAME=label]: once, after that many seconds, read the
+	// frame back and write System/shot-<label>.ppm. Same picture in PPSSPP and
+	// on the card, so render changes can be pixel-compared without a camera
+	// or a screen-capture that lands on the wrong display.
+	{
+		static INT ShotAt = -2; static char ShotName[64];
+		if( ShotAt == -2 )
+		{
+			ShotAt = -1; INT At = 0;
+			if( Parse( appCmdLine(), "SHOTAT=", At ) && At > 0 ) ShotAt = At;
+			appStrcpy( ShotName, "frame" ); Parse( appCmdLine(), "SHOTNAME=", ShotName, 64 );
+		}
+		if( ShotAt > 0 && Viewport && appSeconds() >= (DOUBLE)ShotAt )
+		{
+			ShotAt = 0;
+			const INT W = Viewport->SizeX, H = Viewport->SizeY;
+			BYTE* Pix = (BYTE*)appMalloc( W * H * 4, "shot" );
+			if( Pix )
+			{
+				glFinish();
+				glPixelStorei( GL_PACK_ALIGNMENT, 1 );
+				glReadPixels( 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, Pix );
+				const GLenum Err = glGetError();
+				char Name[128]; appSprintf( Name, "shot-%s.ppm", ShotName );
+				FILE* F = appFopen( Name, "wb" );
+				if( F )
+				{
+					char Hdr[64]; const INT HL = appSprintf( Hdr, "P6\n%d %d\n255\n", W, H );
+					appFwrite( Hdr, 1, HL, F );
+					BYTE* Row = (BYTE*)appMalloc( W * 3, "shotrow" );
+					for( INT y = H - 1; y >= 0 && Row; --y )   // GL rows run bottom-up
+					{
+						const BYTE* Src = Pix + y * W * 4;
+						for( INT x = 0; x < W; ++x ) { Row[x*3] = Src[x*4]; Row[x*3+1] = Src[x*4+1]; Row[x*3+2] = Src[x*4+2]; }
+						appFwrite( Row, 1, W * 3, F );
+					}
+					if( Row ) appFree( Row );
+					appFclose( F );
+				}
+				debugf( NAME_Log, "PSPSHOT: %s %ix%i glErr %04x %s", Name, W, H, (INT)Err, F ? "written" : "NOT written" );
+				appFree( Pix );
+			}
+		}
+	}
+#endif
 
 #ifdef __PSP__
 	// Accumulate the render device's own cycle counters before Lock() resets
