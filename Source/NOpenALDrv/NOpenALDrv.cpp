@@ -630,6 +630,7 @@ UBOOL UNOpenALAudioSubsystem::Init()
 	// priority sound when the voices run out.   [PSP] MaxVoices=16
 	NumSources = 16;
 	GetConfigInt( "PSP", "MaxVoices", NumSources );
+	Parse( appCmdLine(), "MAXVOICES=", NumSources );   // hardware A/B
 	NumSources = Clamp( NumSources, 4, (INT)MAX_SOURCES );
 #else
 	NumSources = MAX_SOURCES;
@@ -646,6 +647,28 @@ UBOOL UNOpenALAudioSubsystem::Init()
 	}
 #endif
 
+#ifdef __PSP__
+	// Resampler: openal-soft's per-voice choice is the bulk of the mixer's
+	// cost on this CPU. [PSP] Resampler=N or -RESAMPLER=N picks by index
+	// (0 is nearest); the list is logged so the ini can name a valid one.
+	{
+		enum { AL_NUM_RESAMPLERS_SOFT_ = 0x1210, AL_DEFAULT_RESAMPLER_SOFT_ = 0x1211, AL_SOURCE_RESAMPLER_SOFT_ = 0x1212, AL_RESAMPLER_NAME_SOFT_ = 0x1213 };
+		typedef const ALchar* (AL_APIENTRY *PFNALGETSTRINGISOFT)( ALenum, ALsizei );
+		PFNALGETSTRINGISOFT GetStringi = (PFNALGETSTRINGISOFT)alGetProcAddress( "alGetStringiSOFT" );
+		if( alIsExtensionPresent( "AL_SOFT_source_resampler" ) && GetStringi )
+		{
+			const ALint Num = alGetInteger( AL_NUM_RESAMPLERS_SOFT_ ), Def = alGetInteger( AL_DEFAULT_RESAMPLER_SOFT_ );
+			char List[256] = ""; INT Len = 0;
+			for( ALint i = 0; i < Num && Len < 200; ++i ) Len += appSprintf( List + Len, "%s%d=%s", i ? " " : "", (int)i, GetStringi( AL_RESAMPLER_NAME_SOFT_, i ) );
+			INT Pick = -1; GetConfigInt( "PSP", "Resampler", Pick ); Parse( appCmdLine(), "RESAMPLER=", Pick );
+			if( Pick >= 0 && Pick < Num )
+				for( INT i = 0; i < NumSources; ++i ) alSourcei( Sources[i], AL_SOURCE_RESAMPLER_SOFT_, Pick );
+			debugf( NAME_Log, "PSPSND: resamplers %s; default %d, using %d", List, (int)Def, Pick >= 0 && Pick < Num ? Pick : (int)Def );
+		}
+		else
+			debugf( NAME_Log, "PSPSND: AL_SOFT_source_resampler not available" );
+	}
+#endif
 	alGenSources( 1, &MusicSource	);
 	alSourcei( MusicSource, AL_SOURCE_RELATIVE, AL_TRUE );
 	alSource3f( MusicSource, AL_POSITION, 0.f, 0.f, 0.f );
@@ -1370,8 +1393,12 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 #ifdef __PSP__
 	{
 		static INT Frames = 0;
-		if( ++Frames % 1200 == 0 )
-			debugf( NAME_Log, "PSPSND: resident %d KB in %d sounds (budget %d KB, %d evicted)", GPspSndResident / 1024, GPspSndRecs.Num(), PspSndBudgetKB(), GPspSndEvicted );
+		if( ++Frames % 300 == 0 )
+		{
+			INT Playing = 0;
+			for( INT i = 0; i < NumSources; ++i ) { ALint St = 0; alGetSourcei( Sources[i], AL_SOURCE_STATE, &St ); if( St == AL_PLAYING ) ++Playing; }
+			debugf( NAME_Log, "PSPSND: resident %d KB in %d sounds (budget %d KB, %d evicted); %d of %d voices playing", GPspSndResident / 1024, GPspSndRecs.Num(), PspSndBudgetKB(), GPspSndEvicted, Playing, NumSources );
+		}
 	}
 #endif
 

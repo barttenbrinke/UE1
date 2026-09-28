@@ -896,6 +896,8 @@ static INT PspSeekTo( FPspFile* Slot, INT Offset )
 	const DWORD C0 = appCycles();
 	const int R = sceIoLseek32( Slot->Fd, Offset, PSP_SEEK_SET );
 	GPspFileIoCycles += (DWORD)( appCycles() - C0 );
+	if( GPspAutoWalkLeft > 0.f && GSecondsPerCycle * (DOUBLE)( appCycles() - C0 ) > 0.010 )
+		debugf( NAME_Log, "PSPIO: seek to %i (from %i) in %s took %.1f ms", Offset, Slot->KernelPos, Slot->Path, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( appCycles() - C0 ) ) );
 	if( R < 0 )
 	{
 		Slot->Error = 1;
@@ -970,6 +972,8 @@ static INT PspEnsureOpen( FPspFile* Slot )
 		const DWORD C0 = appCycles();
 		Slot->Fd = sceIoOpen( Slot->Path, ReopenFlags, 0777 );
 		GPspFileIoCycles += (DWORD)( appCycles() - C0 );
+		if( GPspAutoWalkLeft > 0.f )
+			debugf( NAME_Log, "PSPIO: reopen %s took %.1f ms", Slot->Path, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( appCycles() - C0 ) ) );
 	}
 
 	if( Slot->Fd < 0 )
@@ -1354,6 +1358,8 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 			const DWORD C0 = appCycles();
 			int N = sceIoRead( Slot->Fd, Out, Want );
 			GPspFileIoCycles += (DWORD)( appCycles() - C0 );
+			if( GPspAutoWalkLeft > 0.f && GSecondsPerCycle * (DOUBLE)( appCycles() - C0 ) > 0.010 )
+				debugf( NAME_Log, "PSPIO: direct %i bytes at %i of %s took %.1f ms", Want, Slot->FilePos, Slot->Path, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( appCycles() - C0 ) ) );
 			if( N <= 0 )
 			{
 				if( N < 0 )
@@ -1403,6 +1409,8 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 		const DWORD C0 = appCycles();
 		int N = sceIoRead( Slot->Fd, W.Buf, Slot->NextRefill );
 		GPspFileIoCycles += (DWORD)( appCycles() - C0 );
+		if( GPspAutoWalkLeft > 0.f && GSecondsPerCycle * (DOUBLE)( appCycles() - C0 ) > 0.010 )
+			debugf( NAME_Log, "PSPIO: refill %i bytes at %i of %s took %.1f ms", Slot->NextRefill, Slot->FilePos, Slot->Path, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( appCycles() - C0 ) ) );
 		++GPspFileRefills;
 		if( N > 0 ) { GPspFileRefillBytes += N; Slot->BytesRead += N; ++Slot->Reads; }
 		if( N <= 0 )
@@ -1424,6 +1432,22 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 #endif
 }
 #ifdef __PSP__
+// Raw seek+read cost right now (called from the engine mid-walk to see whether
+// the driver itself slows down under the game's load).
+CORE_API void appPspIoBench( const char* Filename )
+{
+	BYTE* B = (BYTE*)memalign( 64, 8192 );
+	SceUID Fd = sceIoOpen( PspFullPath( Filename ), PSP_O_RDONLY, 0777 );
+	if( B && Fd >= 0 )
+	{
+		const INT Size = (INT)sceIoLseek32( Fd, 0, PSP_SEEK_END );
+		DWORD Seed = 4242; DOUBLE T0, Tot = 0, Worst = 0;
+		for( INT k = 0; k < 12; ++k ) { Seed = Seed * 1664525u + 1013904223u; const INT P = (INT)( ( Seed % (DWORD)( Size - 8192 ) ) & ~63 ); T0 = appSeconds(); sceIoLseek32( Fd, P, PSP_SEEK_SET ); sceIoRead( Fd, B, 8192 ); const DOUBLE D = appSeconds() - T0; Tot += D; if( D > Worst ) Worst = D; }
+		debugf( NAME_Log, "PSPIOBENCH: %s random seek+read 8 KB now: %.1f ms each, worst %.1f ms", Filename, (FLOAT)( Tot * 1000.0 / 12 ), (FLOAT)( Worst * 1000.0 ) );
+	}
+	if( Fd >= 0 ) sceIoClose( Fd );
+	if( B ) free( B );
+}
 // -IOCHECK: read one region of a package several ways and compare, on the
 // device itself, so a corrupt read path shows up without reference data.
 CORE_API void appPspIoCheck( const char* Filename )

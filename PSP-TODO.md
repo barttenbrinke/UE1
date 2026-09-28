@@ -58,15 +58,26 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       (b) During the collapse: single frames of 0.8-2 s, each fully
       accounted for by appReloadObject of sounds played for the first
       time (samples are deferred at load): 5-36 stick reads per stall at
-      ~60 ms per read, no handle reopens. The raw driver, measured in the
-      same process (`-IOCHECK` seek+read benchmark), does a random 8 KB
-      seek+read in 1.7-2.4 ms, close+open in 13 ms. So something in the
-      play-time read path (direct reads of odd lengths? the audio thread
-      pre-empting? cache writeback of large destination buffers?) costs
-      30x the driver. NEXT: the odd-length / unaligned read benchmark is
-      built into `-IOCHECK` (UnrealI.u section) -- run it. Then either fix
-      the path or prefetch a level's sounds at load (TObjectIterator<USound>
-      with empty Data, within the sound budget).
+      20-400 ms each. FOUND: the reads are slow because the main thread
+      is starved, not because of the card. The raw driver benchmark run
+      from inside the walk (`PSPIOBENCH`) gives 21 ms per random 8 KB
+      seek+read with audio running and 1.7-2.4 ms with `-NOSOUND`; at
+      LoadMap end it is 2.4 ms either way. Thread priorities (lower wins):
+      SceFatmsMedia 16, psp_music 16, update_thread 17, openal-soft 22,
+      audioOutput 22, user_main 36 (dropped by 4 "so audio threads
+      preempt it"). During the earthquake the openal-soft mixer takes
+      35-57% of the CPU (7% in a four-bot match, 20% in DmRadikus at 16
+      voices), so every stick wait and every main-thread frame stretches
+      behind it. Reverb was off, HRTF is not requested (PSP_NO_EFX), so
+      the cost is per-voice mixing/resampling of up to 16 simultaneous
+      earthquake sounds. A/B switches are built (PRX only, not yet run:
+      the PSPLink shell died): `-RESAMPLER=N` (AL_SOFT_source_resampler,
+      the list is logged; 0 = nearest), `-MAXVOICES=N`, and the periodic
+      PSPSND line now counts playing voices. Candidate fixes, in order:
+      nearest resampler / fewer voices if that halves the mixer; prefetch
+      a level's sounds at load so nothing reloads mid-play; only then
+      consider the priority split (main thread must stay below audio or
+      the mixer skips, but a load-in-play could temporarily raise it).
       Tools: `PSPTEST: slow frame` lines (every frame >60 ms while the walk
       runs, with deltas of stick ms/reads/reopens/seeks, linker preload ms,
       reloads, uploads, sounds, mesh reload KB), per-file stick attribution

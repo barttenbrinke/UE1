@@ -1357,6 +1357,12 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 					}
 				}
 			}
+			// Raw driver cost in the middle of the walk (t+4 s and t+7 s).
+			static INT Bench = 0;
+			if( ( Bench == 0 && appSeconds() - GPspAutoWalkT0 > 4.0 ) || ( Bench == 1 && appSeconds() - GPspAutoWalkT0 > 7.0 ) )
+			{
+				++Bench; appPspIoBench( "../Sounds/Ambmodern.uax" ); appPspIoBench( "../System/UnrealI.u" );
+			}
 			if( GPspAutoWalkLeft <= 0.f ) debugf( NAME_Log, "PSPTEST: autowalk finished" );
 		}
 	}
