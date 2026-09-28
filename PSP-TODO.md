@@ -54,10 +54,32 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       (CreatureChunks, Thigh, MaleHead, Arm1, Leg1, Stomach), 18
       ExplosionChain actors fire, and every one of those needs meshes,
       textures and sounds that were skipped at load. Four costs stack:
-      (a) The corridor view itself runs at 12 fps before anything happens:
-      ~800 mesh polys/frame (decorations, corpses), mesh pipeline 21 ms +
-      occlusion 22 ms + polyv 11 ms + illum 9 ms per frame. General
-      mesh-heavy-view cost; the lower deck runs 27 fps with 0 mesh polys.
+      (a) The corridor view itself ran at 12 fps before anything happened:
+      ~800 mesh polys/frame (decorations, corpses). Itemised per frame
+      with the mesh2/mesh3 report lines: light calc 5.2 ms, corner
+      packing 2.9, clipped-triangle fallback 2.0 (17% of tris), triangle
+      normals 1.9, vertex normals 1.8, GetFrame 1.5, project 1.1.
+      DONE (mesh 19.4 -> 8.6 ms/frame; 16 -> 20 fps standing still with
+      the mixer already off the CPU; 20 fps while walking the collapse):
+      - per-actor vertex light cache (GCache CID_Extra0): specular is
+        dropped on the PSP so vertex lighting no longer depends on the
+        camera; the key is mesh/sequence/frame/location/rotation/scale +
+        a hash of the light actors' static properties and positions +
+        ambient/diffuse (FLightManager::PspLightSignature). Static
+        decorations are lit once; 62,600 of 75,000 vertices per 100 frames
+        came from the cache. Not cached: fogged, unlit, fattened actors.
+        Cost: torch flicker no longer shows on static meshes.
+      - triangle normals only on demand (they only feed vertex normals,
+        which only feed lighting); projection only for the clipper.
+      - guard band: triangles with a vertex off-screen but within
+        [PSP] MeshGuardBand (300%) half-widths go to the GE unclipped
+        (its coordinate space is 4096 wide); only near-plane triangles
+        use the CPU clipper.
+      - unlit meshes take the batched path with the actor's glow colour.
+      Remaining mesh cost: packing 2.3 ms (three corners per triangle:
+      indexed draws with per-vertex data are the next step), GetFrame
+      1.5, process 1.1, lists 1.0. The corridor's other costs are now
+      occlusion 13.8 ms and polyv 6.5 ms per frame.
       (b) DONE: openal-soft (the SDK's 1.6.372) is gone from the PSP
       build. Its mixer thread sat at priority 22 above the game thread's
       36 and took 25-57% of the CPU with 4-6 voices playing (7% in a bot
