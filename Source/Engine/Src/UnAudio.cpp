@@ -35,7 +35,7 @@ void USound::Serialize( FArchive& Ar )
 				Data.Empty(); Data.Add( Bytes );
 				Ar.Serialize( &Data(0), Bytes );
 			}
-			Data.Empty();
+			Data.Empty(); Data.Shrink();   // Empty() alone keeps the allocation
 			SkippedBytes = Bytes;
 		}
 		else

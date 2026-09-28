@@ -48,7 +48,7 @@ void UMesh::Serialize( FArchive& Ar )
 	{ \
 		INT Num = 0; Ar << AR_INDEX(Num); \
 		if( Num > 0 && !Ar.Skip( Num * (ElemBytes) ) ) { Arr.Empty(); Arr.Add( Num ); for( INT k=0; k<Num; k++ ) Ar << Arr(k); } \
-		Arr.Empty(); \
+		Arr.Empty(); Arr.Shrink(); /* Empty() alone keeps the allocation */ \
 	}
 	if( SkipArrays )
 	{

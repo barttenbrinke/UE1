@@ -585,6 +585,36 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s; actors %i (%i null); stick: %i refills %i KB, %.1f s in read/seek/open, %i seeks, %i reopens; %i files (%i KB) read whole",
 			Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState(), L ? L->Num() : 0, NullActors,
 			GPspFileRefills - Refills0, ( GPspFileRefillBytes - Bytes0 ) / 1024, (FLOAT)( GSecondsPerCycle * (DOUBLE)( GPspFileIoCycles - Io0 ) ), GPspFileSeeks - Seeks0, GPspFileReopens - Reopens0, CacheFiles, CacheKB );
+		// -IOCHECK: exercise the file layer's read paths against each other.
+		if( ParseParam( appCmdLine(), "IOCHECK" ) )
+		{
+			appPspIoCheck( "../Textures/SkyCity.utx" );
+			appPspIoCheck( "../System/UnrealI.u" );
+		}
+		// -TEXCRC: checksum every texture and mesh the level load left
+		// resident, so a hardware log diffs against an emulator log of the
+		// same map (the emulator's sceIoRead is a memcpy; the stick is DMA).
+		if( ParseParam( appCmdLine(), "TEXCRC" ) )
+		{
+			INT NTex = 0, NMesh = 0;
+			for( TObjectIterator<UTexture> It; It; ++It )
+			{
+				if( It->Mips.Num() && It->Mips(0).DataArray.Num() )
+				{
+					debugf( NAME_Log, "PSPDATACRC: tex %s %i crc %08x", It->GetPathName(), It->Mips(0).DataArray.Num(), (DWORD)appMemCrc( &It->Mips(0).DataArray(0), It->Mips(0).DataArray.Num() ) );
+					++NTex;
+				}
+			}
+			for( TObjectIterator<UMesh> It; It; ++It )
+			{
+				if( It->Verts.Num() && It->Tris.Num() )
+				{
+					debugf( NAME_Log, "PSPDATACRC: mesh %s verts %i crc %08x tris %i crc %08x", It->GetPathName(), It->Verts.Num(), (DWORD)appMemCrc( (BYTE*)&It->Verts(0), It->Verts.Num() * sizeof(FMeshVert) ), It->Tris.Num(), (DWORD)appMemCrc( (BYTE*)&It->Tris(0), It->Tris.Num() * sizeof(FMeshTri) ) );
+					++NMesh;
+				}
+			}
+			debugf( NAME_Log, "PSPDATACRC: %i textures, %i meshes resident after load", NTex, NMesh );
+		}
 		INT Dump = 0; GetConfigInt( "PSP", "MemDump", Dump );
 		if( Dump )
 		{

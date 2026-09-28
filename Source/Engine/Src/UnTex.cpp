@@ -98,7 +98,14 @@ void UTexture::GetInfo( FTextureInfo& TextureInfo, DOUBLE CurrentTime )
 	TextureInfo.Palette			= GetColors();
 	for( INT i=0; i<Mips.Num(); i++ )
 	{
+#ifdef __PSP__
+		// Texels may have been freed (see Serialize): an empty array can still
+		// own a stale allocation, and handing that out as texel data drew heap
+		// garbage on walls and HUD icons. NULL tells the render device to reload.
+		Mips(i).DataPtr     = Mips(i).DataArray.Num() ? &Mips(i).DataArray(0) : NULL;
+#else
 		Mips(i).DataPtr     = &Mips(i).DataArray(0);
+#endif
 		TextureInfo.Mips[i] = &Mips(i);
 	}
 
@@ -329,9 +336,11 @@ void UTexture::Serialize( FArchive& Ar )
 			Ar << AR_INDEX(Bytes);
 			if( Bytes > 0 && !Ar.Skip( Bytes ) )
 			{
-				M.DataArray.Add( Bytes );   // archive cannot seek: read and drop
-				Ar.Serialize( &M.DataArray(0), Bytes );
-				M.DataArray.Empty();
+				// Archive cannot seek: read and drop. Through a scratch array,
+				// not M.DataArray -- Empty() keeps (a shrunk part of) the
+				// allocation, and GetInfo used to hand that out as texels.
+				TArray<BYTE> Drop( Bytes );
+				Ar.Serialize( &Drop(0), Bytes );
 			}
 			Ar << M.USize << M.VSize << M.UBits << M.VBits;
 			M.DataPtr = NULL;

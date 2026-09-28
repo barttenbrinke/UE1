@@ -1385,6 +1385,54 @@ CORE_API INT appFread( void* Buffer, INT Size, INT Count, FILE* Stream )
 	return fread(Buffer,Size,Count,Stream);
 #endif
 }
+#ifdef __PSP__
+// -IOCHECK: read one region of a package several ways and compare, on the
+// device itself, so a corrupt read path shows up without reference data.
+CORE_API void appPspIoCheck( const char* Filename )
+{
+	const INT Off = 1024 * 1024, Len = 1024 * 1024;
+	FILE* F = appFopen( Filename, "rb" );
+	if( !F ) { debugf( NAME_Log, "PSPIOCHECK: cannot open %s", Filename ); return; }
+	appFseek( F, 0, SEEK_END ); const INT Size = appFtell( F );
+	if( Size < Off + Len ) { debugf( NAME_Log, "PSPIOCHECK: %s too small (%i)", Filename, Size ); appFclose( F ); return; }
+	BYTE* Ref   = (BYTE*)memalign( 64, Len );       // one direct DMA read into a fresh buffer
+	BYTE* Dirty = (BYTE*)memalign( 64, Len );       // direct read into a buffer the CPU just wrote (dirty cache lines)
+	BYTE* Win   = (BYTE*)appMalloc( Len + 64, "iocheck" ) + 3;   // unaligned: everything staged through windows
+	if( !Ref || !Dirty || !Win ) { debugf( NAME_Log, "PSPIOCHECK: no memory" ); appFclose( F ); return; }
+	appFseek( F, Off, SEEK_SET ); INT Got = appFread( Ref, 1, Len, F );
+	debugf( NAME_Log, "PSPIOCHECK: %s size %i; direct read got %i crc %08x", Filename, Size, Got, (DWORD)appMemCrc( Ref, Len ) );
+	appMemset( Dirty, 0xA5, Len );
+	appFseek( F, Off, SEEK_SET ); Got = appFread( Dirty, 1, Len, F );
+	INT Bad = 0; for( INT i = 0; i < Len; i += 64 ) if( appMemcmp( Ref + i, Dirty + i, 64 ) ) ++Bad;
+	debugf( NAME_Log, "PSPIOCHECK: direct into dirty buffer got %i crc %08x, %i of %i lines differ", Got, (DWORD)appMemCrc( Dirty, Len ), Bad, Len / 64 );
+	// Windowed, sequential, odd chunk size, one window (play-time setting).
+	INT Pos = 0; appFseek( F, Off, SEEK_SET );
+	while( Pos < Len ) { INT N = Min( 777, Len - Pos ); if( appFread( Win + Pos, 1, N, F ) != N ) break; Pos += N; }
+	Bad = 0; for( INT i = 0; i < Len; i += 64 ) if( appMemcmp( Ref + i, Win + i, 64 ) ) ++Bad;
+	debugf( NAME_Log, "PSPIOCHECK: windowed sequential (777 B) read %i crc %08x, %i lines differ", Pos, (DWORD)appMemCrc( Win, Len ), Bad );
+	// Windowed, random seeks and small reads, then the same with the load-time 16 windows.
+	for( INT Pass = 0; Pass < 2; ++Pass )
+	{
+		if( Pass ) appPspLoadCacheBegin();
+		appMemset( Win, 0, Len ); INT Mis = 0, Reads = 0; DWORD Seed = 12345;
+		for( INT k = 0; k < 400; ++k )
+		{
+			Seed = Seed * 1664525u + 1013904223u; const INT P = (INT)( Seed % (DWORD)( Len - 4096 ) );
+			Seed = Seed * 1664525u + 1013904223u; const INT N = 16 + (INT)( Seed % 3000u );
+			appFseek( F, Off + P, SEEK_SET );
+			if( appFread( Win + P, 1, N, F ) != N ) { ++Mis; continue; }
+			++Reads; if( appMemcmp( Ref + P, Win + P, N ) ) ++Mis;
+		}
+		INT Files = 0, KB = 0; if( Pass ) appPspLoadCacheEnd( Files, KB );
+		debugf( NAME_Log, "PSPIOCHECK: %i random reads (%s), %i mismatching", Reads, Pass ? "16 windows" : "1 window", Mis );
+	}
+	// Direct read into a buffer that was read (not written) by the CPU just before: stale lines.
+	appFseek( F, Off + 4096, SEEK_SET ); Got = appFread( Dirty, 1, Len, F );
+	Bad = 0; for( INT i = 0; i < Len - 4096; i += 64 ) if( appMemcmp( Ref + 4096 + i, Dirty + i, 64 ) ) ++Bad;
+	debugf( NAME_Log, "PSPIOCHECK: direct read over a CPU-read buffer (shifted 4 KB) got %i, %i lines differ", Got, Bad );
+	free( Ref ); free( Dirty ); appFree( Win - 3 ); appFclose( F );
+}
+#endif
 CORE_API INT appFerror( FILE* F )
 {
 #ifdef __PSP__

@@ -27,17 +27,26 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 - [ ] OpenAL mixer on the Media Engine: no longer worth it (2% without
       reverb). Reverb on the ME would be, if the reverb is wanted back.
 
-- [ ] Texture corruption "here and there" reported on the card build with
-      the batched tile/mesh paths (2026-09-28). Candidate fixed, not yet
-      confirmed by eye: the re-upload copies for dynamic textures (realtime
-      fire/water/sky, unpalettised lightmaps) lived in three slots shared
-      by every dynamic texture; a view with three animated surfaces wrote
-      each slot every frame while the GE, a frame behind, still sampled
-      it. Now a 512 KB byte ring (~8 frames of three 256x256 8-bit
-      textures) in `PspRotateDynTex`. If garbage persists, next suspects:
-      the batched DrawTile path (texture switch inside a batch) and the
-      mip fill placeholders (an 8x8 copy of the smallest real mip is what
-      the GE samples once a texture is under 8 pixels on screen).
+- [x] Texture corruption "here and there" (walls, HUD icons, fonts; also
+      in the emulator). Cause: `TArray(INT InNum=0)` calls Realloc for
+      zero elements and `appRealloc(NULL,0)` returns newlib's malloc(0)
+      block, so an EMPTY mip array still has a non-NULL Data pointer.
+      `UTexture::GetInfo` set `DataPtr = &DataArray(0)` unconditionally;
+      for a texture whose texels were skipped at load that pointed at a
+      16-byte block, the render device saw "data present", never reloaded,
+      and uploaded the heap behind it. Fixed: GetInfo hands out NULL for an
+      empty array (PSP only), the read-and-drop fallbacks in the texture,
+      sound and mesh serialisers release their scratch allocations, and
+      `-TEXCRC` logs a checksum of every base level handed to the GE plus
+      the resident texture/mesh data after a load (`PSPTEXCRC`,
+      `PSPDATACRC`; `-IOCHECK` cross-checks the file layer's read paths on
+      the device -- all clean). Emulator and card upload checksums now
+      match. Side finding: every default-constructed TArray costs a
+      malloc(0) chunk; returning NULL from `appRealloc(NULL,0)` would save
+      ~16 bytes per empty array (thousands) but any `&Arr(0)` on an empty
+      array would then be NULL -- untested, left alone.
+      The dynamic-texture copy ring (three slots -> 512 KB byte ring) was
+      a real but separate hazard and stays.
 - [ ] Level load time, remaining half: on the card an Entry load is now
       7.3 s of which 4.0 s is stick I/O, DmRadikus 14.3 s / 7.7 s. The
       `-REFILLKB` A/B (see the done list) showed bytes moved, not read

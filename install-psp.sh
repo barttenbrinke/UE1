@@ -96,7 +96,7 @@ LightFX=1         ; torch/fire/water light waver effects
 VertexLight=1     ; fold lightmap into vertex colour: one geometry pass, not two
 LightScale=150    ; VertexLight brightness %, 100 matches the two-pass original
 Gamma=150         ; base texture gamma %, 100 = off
-LightGamma=210    ; lightmap curve %, 100 = linear; lifts dark areas without saturating bright ones
+LightGamma=280    ; lightmap curve %, 100 = linear; lifts dark areas without saturating bright ones (210 was still too dark on the LCD)
 VertexArrays=1    ; 0 = stock immediate-mode renderer (bisect switch)
 TextureBudgetMB=8 ; resident GL texture memory before least-recently-used eviction; the heap is ~38MB and Unreal's own data takes ~26MB
 SoundBudgetKB=2048 ; resident OpenAL sample memory; least recently played sounds are unregistered past this

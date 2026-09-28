@@ -2617,6 +2617,9 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 	guard(UNOpenGLRenderDevice::UploadTexture);
 #ifdef __PSP__
 	// Evicted earlier with its engine copy already freed: fetch it again.
+	// UTexture::GetInfo leaves DataPtr NULL for an empty mip array; an
+	// empty TArray still owns a zero-byte allocation, so testing the array's
+	// data pointer instead would (and did) upload heap garbage as texels.
 	if( NewTexture && Info.Mips[0] && !Info.Mips[0]->DataPtr )
 		PspReloadTextureData( Info );
 #endif
@@ -2775,6 +2778,27 @@ void UNOpenGLRenderDevice::UploadTexture( FTextureInfo& Info, UBOOL Masked, UBOO
 			glTexImage2D( GL_TEXTURE_2D, MipIndex, InternalFormat, UpW, UpH, 0, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );
 		else
 			glTexSubImage2D( GL_TEXTURE_2D, MipIndex, 0, 0, UpW, UpH, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );
+#ifdef __PSP__
+		// -TEXCRC: checksum of every base level as handed to the GE, so a
+		// hardware log can be diffed against an emulator log of the same map
+		// to tell corrupt texel data (loader, cache) from a corrupt draw.
+		{
+			static INT TexCrc = -1;
+			if( TexCrc < 0 ) TexCrc = ParseParam( appCmdLine(), "TEXCRC" ) ? 1 : 0;
+			if( TexCrc && MipIndex == 0 && !( Info.TextureFlags & TF_Realtime ) )
+			{
+				const INT CrcBpp = ( UploadFormat == GL_COLOR_INDEX8_EXT || UploadFormat == GL_COLOR_INDEX ) ? 1 : 4;
+				UTexture* CrcTex = PspTextureFromCacheID( Info.CacheID );
+				debugf( NAME_Log, "PSPTEXCRC: %s %ix%i bpp%i %s crc %08x src %08x mips %i flags %08x", CrcTex ? CrcTex->GetPathName() : "-", UpW, UpH, CrcBpp, NewTexture ? "new" : "sub", (DWORD)appMemCrc( UploadBuf, UpW * UpH * CrcBpp ), (DWORD)appMemCrc( (BYTE*)Info.Mips[0]->DataPtr, Info.Mips[0]->USize * Info.Mips[0]->VSize ), Info.NumMips, Info.TextureFlags );
+				if( UpW * UpH * CrcBpp <= 256 )
+				{
+					char Hex[256 * 2 + 1]; char* H = Hex;
+					for( INT b = 0; b < UpW * UpH * CrcBpp; ++b ) H += appSprintf( H, "%02x", UploadBuf[b] );
+					debugf( NAME_Log, "PSPTEXHEX: %s %s", CrcTex ? CrcTex->GetPathName() : "-", Hex );
+				}
+			}
+		}
+#endif
 #ifdef __PSP__
 		if( NewTexture && glGetError() != GL_NO_ERROR )
 		{
