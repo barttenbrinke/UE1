@@ -127,6 +127,9 @@ public:
 	void Init();
 	void Exit();
 	DWORD SetupForActor( FSceneNode* Frame, AActor* Actor, FVolActorLink* LeafLights, FActorLink* Volumetrics );
+#ifdef __PSP__
+	DWORD PspLightSignature();
+#endif
 	void SetupForSurf( FSceneNode* Frame, FCoords& FacetCoords, FBspDrawList* Draw, FTextureInfo*& LightMap, FTextureInfo*& FogMap, FTextureInfo* BumpMap, UBOOL Merged );
 	void FinishSurf();
 	void FinishActor();
@@ -545,10 +548,14 @@ FPlane FLightManager::Light( FTransSample& Vert, DWORD PolyFlags )
 				if ( G < 0.0)
 					G = 0.0;
 
-				// Specular lighting.
+#ifndef __PSP__
+				// Specular lighting. (PSP: dropped -- it depends on the view
+				// direction, and without it a mesh's vertex lighting is the
+				// same from any camera, which lets DrawMesh cache it per actor.)
 				FLOAT Specular = (Light->Location.MirrorByPlane(Vert.Normal) | Vert.Point) - PointSquared;
 				if ( Specular > 0.0 )
 					G += 6.0 * Square(Specular)/(LightSquared*PointSquared);
+#endif
 
 				// Radial falloff.
 				G *= 1.0 - LightSize * Light->RRadius;
@@ -2371,6 +2378,30 @@ DWORD FLightManager::SetupForActor( FSceneNode* InFrame, AActor* InActor, FVolAc
 //
 // Finish actor lighting.
 //
+#ifdef __PSP__
+DWORD FLightManager::PspLightSignature()
+{
+	DWORD Sig = 2166136261u;
+	for( FLightInfo* Light=FirstLight; Light<LastLight; Light++ )
+	{
+		Sig = ( Sig ^ (DWORD)Light->Actor ) * 16777619u;
+		Sig = ( Sig ^ (DWORD)Light->Opt ) * 16777619u;
+		// The actor's own light properties, not FloatColor: a torch's waver
+		// changes FloatColor every frame and would defeat the cache for a
+		// flicker nobody sees on a static mesh.
+		if( Light->Actor )
+		{
+			Sig = ( Sig ^ (DWORD)Light->Actor->LightBrightness ^ ( (DWORD)Light->Actor->LightHue << 8 ) ^ ( (DWORD)Light->Actor->LightSaturation << 16 ) ^ ( (DWORD)Light->Actor->LightRadius << 24 ) ) * 16777619u;
+			Sig = ( Sig ^ (DWORD)( Light->Actor->Location.X * 4.f ) ^ ( (DWORD)( Light->Actor->Location.Y * 4.f ) << 11 ) ^ ( (DWORD)( Light->Actor->Location.Z * 4.f ) << 22 ) ) * 16777619u;
+		}
+		else
+			Sig = ( Sig ^ (DWORD)Light->Radius ) * 16777619u;
+	}
+	Sig = ( Sig ^ (DWORD)( AmbientVector.R * 4096.f ) ^ ( (DWORD)( AmbientVector.G * 4096.f ) << 10 ) ^ ( (DWORD)( AmbientVector.B * 4096.f ) << 20 ) ) * 16777619u;
+	Sig = ( Sig ^ (DWORD)( Diffuse * 4096.f ) ) * 16777619u;
+	return Sig;
+}
+#endif
 void FLightManager::FinishActor()
 {
 	guard(FLightManager::FinishActor);

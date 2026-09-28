@@ -55,6 +55,9 @@ public:
 	virtual void Init()=0;
 	virtual void Exit()=0;
 	virtual DWORD SetupForActor( FSceneNode* Frame, AActor* Actor, struct FVolActorLink* LeafLights, FActorLink* Volumetrics )=0;
+#ifdef __PSP__
+	virtual DWORD PspLightSignature()=0;   // hash of the actor's light set, ambient and diffuse (mesh light cache key)
+#endif
 	virtual void SetupForSurf( FSceneNode* Frame, FCoords& FacetCoords, FBspDrawList* Draw, FTextureInfo*& LightMap, FTextureInfo*& FogMap, FTextureInfo* BumpMap, UBOOL Merged )=0;
 	virtual void FinishSurf()=0;
 	virtual void FinishActor()=0;
@@ -189,6 +192,8 @@ extern FLightManagerBase* GLightManager;
 		// MeshStats.
 		INT MeshTime;
 		INT MeshGetFrameTime, MeshProcessTime, MeshLightSetupTime, MeshLightTime, MeshSubTime, MeshClipTime, MeshTmapTime;
+		INT MeshOutcodeTime, MeshNormalTime, MeshLightCalcTime, MeshProjectTime, MeshListTime, MeshFallbackTime, MeshFallbackTris, MeshVertsLit, MeshVertsCached;   // PSP: finer DrawMesh split
+		INT MeshKeyMiss[9], MeshFallbackWhy[7];   // PSP: light cache miss reasons (mesh/seq/anim/loc/rot/scale/sig/other/new), fast-path rejects (near/guard/flags/actor)
 		INT MeshCount, MeshPolyCount, MeshSubCount, MeshVertLightCount, MeshLightCount, MeshVtricCount;
 
 		// ActorStats.

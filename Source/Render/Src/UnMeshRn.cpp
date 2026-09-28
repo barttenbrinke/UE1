@@ -330,12 +330,14 @@ void URender::DrawMesh
 	// Compute outcodes.
 	BYTE Outcode = FVF_OutReject;
 	guardSlow(Outcode);
+	STAT(uclock(GStat.MeshOutcodeTime));
 	for( INT i=0; i<Mesh->FrameVerts; i++ )
 	{
 		Samples[i].Light.R = -1;
 		Samples[i].ComputeOutcode( Frame );
 		Outcode &= Samples[i].Flags;
 	}
+	STAT(uunclock(GStat.MeshOutcodeTime));
 	unguardSlow;
 
 	// Render a wireframe view or textured view.
@@ -420,12 +422,22 @@ void URender::DrawMesh
 	HasSpecialCoords = 0;
 	FMeshTriSort* TriPool=NULL;
 	FVector* TriNormals=NULL;
+#ifdef __PSP__
+	BYTE* TriNormalDone=NULL;
+#endif
 	if( Outcode == 0 )
 	{
 		// Process triangles.
 		guardSlow(Process);
 		TriPool    = New<FMeshTriSort>(GMem,Mesh->Tris.Num());
 		TriNormals = New<FVector>(GMem,Mesh->Tris.Num());
+#ifdef __PSP__
+		// Triangle normals only feed vertex normals, which only feed lighting;
+		// with the light cache below most frames need none, so they are
+		// computed on demand (TriNormalDone) instead of for every triangle.
+		TriNormalDone = New<BYTE>(GMem,Mesh->Tris.Num());
+		appMemset( TriNormalDone, 0, Mesh->Tris.Num() );
+#endif
 
 		// Set up list for triangle sorting, adding all possibly visible triangles.
 		STAT(uclock(GStat.MeshProcessTime));
@@ -438,9 +450,11 @@ void URender::DrawMesh
 			FTransform& V3  = Samples[Tri->iVertex[2]];
 			DWORD PolyFlags = ExtraFlags | Tri->PolyFlags;
 
+#ifndef __PSP__
 			// Compute triangle normal.
 			TriNormals[i] = (V1.Point-V2.Point) ^ (V3.Point-V1.Point);
 			TriNormals[i] *= DivSqrtApprox(TriNormals[i].SizeSquared()+0.001);
+#endif
 
 			// See if potentially visible.
 			if( !(V1.Flags & V2.Flags & V3.Flags) )
@@ -507,6 +521,42 @@ void URender::DrawMesh
 		STAT(uclock(GStat.MeshLightSetupTime));
 		ExtraFlags |= GLightManager->SetupForActor( Frame, Owner, LeafLights, Volumetrics );
 		STAT(uunclock(GStat.MeshLightSetupTime));
+#ifdef __PSP__
+		// Per-actor vertex light cache. Without the specular term (dropped on
+		// the PSP, see FLightManager::Light) a vertex's lighting depends only
+		// on the actor's pose and its light set, not on the camera, so a
+		// decoration that has not moved is lit once and read back afterwards
+		// (this was 5 ms of a 19 ms mesh frame in the Vortex corridor; the
+		// vertex and triangle normals it needed were another 3.5 ms).
+		// Entries live in GCache under the actor; the key is compared whole.
+		struct FPspMeshLightKey { UMesh* Mesh; INT Seq; FLOAT AnimFrame; FVector Loc; FRotator Rot; FLOAT Scale; DWORD Sig; DWORD Flags; INT Verts; };
+		BYTE* LitCache = NULL; FCacheItem* LitItem = NULL;
+		if( !(ExtraFlags & (PF_RenderFog|PF_Unlit|PF_Selected)) && !Fatten && !GIsEditor )
+		{
+			FPspMeshLightKey Key; appMemset( &Key, 0, sizeof(Key) );
+			Key.Mesh = Mesh; Key.Seq = Owner->AnimSequence.GetIndex(); Key.AnimFrame = Owner->AnimFrame; Key.Loc = Owner->Location + Owner->PrePivot; Key.Rot = Owner->Rotation;
+			Key.Scale = Owner->DrawScale; Key.Sig = GLightManager->PspLightSignature(); Key.Flags = ExtraFlags & (PF_Unlit|PF_RenderFog); Key.Verts = Mesh->FrameVerts;
+			const QWORD CID = MakeCacheID( CID_Extra0, Owner );
+			BYTE* Mem = GCache.Get( CID, LitItem );
+			if( Mem && appMemcmp( Mem, &Key, sizeof(Key) ) != 0 )
+			{
+				const FPspMeshLightKey& Old = *(FPspMeshLightKey*)Mem;
+				STAT(GStat.MeshKeyMiss[ Old.Mesh!=Key.Mesh ? 0 : Old.Seq!=Key.Seq ? 1 : Old.AnimFrame!=Key.AnimFrame ? 2 : Old.Loc!=Key.Loc ? 3 : Old.Rot!=Key.Rot ? 4 : Old.Scale!=Key.Scale ? 5 : Old.Sig!=Key.Sig ? 6 : 7 ]++);
+				LitItem->Unlock();
+				GCache.Flush( CID );
+				Mem = NULL;
+			}
+			else if( !Mem )
+				STAT(GStat.MeshKeyMiss[8]++);
+			if( !Mem )
+			{
+				Mem = GCache.Create( CID, LitItem, sizeof(Key) + Mesh->FrameVerts * 4 );
+				appMemcpy( Mem, &Key, sizeof(Key) );
+				appMemset( Mem + sizeof(Key), 0, Mesh->FrameVerts * 4 );
+			}
+			LitCache = Mem + sizeof(Key);
+		}
+#endif
 
 		// Perform all vertex lighting.
 		guardSlow(Light);
@@ -519,11 +569,34 @@ void URender::DrawMesh
 				FTransSample& Vert = Samples[iVert];
 				if( Vert.Light.R == -1 )
 				{
+#ifdef __PSP__
+					DWORD* Slot = LitCache ? (DWORD*)LitCache + iVert : NULL;
+					if( Slot && ( *Slot & 0xFF000000u ) )
+					{
+						Vert.Light = FPlane( ( *Slot & 0xff ) / 255.f, ( ( *Slot >> 8 ) & 0xff ) / 255.f, ( ( *Slot >> 16 ) & 0xff ) / 255.f, 0.f );
+						Vert.Fog   = FPlane( 0, 0, 0, 0 );
+						STAT(GStat.MeshVertsCached++);
+						continue;
+					}
+#endif
 					// Compute vertex normal.
+					STAT(uclock(GStat.MeshNormalTime));
 					FVector Norm(0,0,0);
 					FMeshVertConnect& Connect = Mesh->Connects(iVert);
 					for( INT k=0; k<Connect.NumVertTriangles; k++ )
-						Norm += TriNormals[Mesh->VertLinks(Connect.TriangleListOffset + k)];
+					{
+						const INT iTri = Mesh->VertLinks(Connect.TriangleListOffset + k);
+#ifdef __PSP__
+						if( !TriNormalDone[iTri] )
+						{
+							TriNormalDone[iTri] = 1;
+							FMeshTri& T = Mesh->Tris(iTri);
+							TriNormals[iTri] = (Samples[T.iVertex[0]].Point-Samples[T.iVertex[1]].Point) ^ (Samples[T.iVertex[2]].Point-Samples[T.iVertex[0]].Point);
+							TriNormals[iTri] *= DivSqrtApprox(TriNormals[iTri].SizeSquared()+0.001);
+						}
+#endif
+						Norm += TriNormals[iTri];
+					}
 					Vert.Normal = FPlane( Vert.Point, Norm * DivSqrtApprox(Norm.SizeSquared()) );
 
 					// Fatten it if desired.
@@ -532,14 +605,24 @@ void URender::DrawMesh
 						Vert.Point += Vert.Normal * Fatness;
 						Vert.ComputeOutcode( Frame );
 					}
+					STAT(uunclock(GStat.MeshNormalTime));
 
 					// Compute effect of each lightsource on this vertex.
+					STAT(uclock(GStat.MeshLightCalcTime));
 					Vert.Light = GLightManager->Light( Vert, ExtraFlags );
 					Vert.Fog   = GLightManager->Fog  ( Vert, ExtraFlags );
-
+					STAT(uunclock(GStat.MeshLightCalcTime));
+					STAT(GStat.MeshVertsLit++);
+#ifdef __PSP__
+					if( Slot )
+						*Slot = (DWORD)Clamp( appRound( Vert.Light.R * 255.f ), 0, 255 ) | ( (DWORD)Clamp( appRound( Vert.Light.G * 255.f ), 0, 255 ) << 8 ) | ( (DWORD)Clamp( appRound( Vert.Light.B * 255.f ), 0, 255 ) << 16 ) | 0xFF000000u;
+#else
 					// Project it.
+					STAT(uclock(GStat.MeshProjectTime));
 					if( !Vert.Flags )
 						Vert.Project( Frame );
+					STAT(uunclock(GStat.MeshProjectTime));
+#endif
 				}
 			}
 		}
@@ -557,7 +640,19 @@ void URender::DrawMesh
 		// the flags so the loop below skips them.
 		UBOOL* Taken = New<UBOOL>(GMem,VisibleTriangles);
 		appMemset( Taken, 0, VisibleTriangles * sizeof(UBOOL) );
-		if( Frame->NearClip.W == 0.0 && Frame->Mirror != -1 && !(ExtraFlags & (PF_Unlit|PF_Environment)) )
+		STAT(uclock(GStat.MeshListTime));
+		// Triangles need the CPU clipper only against the near plane: the GE
+		// rasterises far outside the screen (its coordinate space is 4096
+		// wide, the screen 480), so a vertex up to MeshGuardBand screen
+		// half-widths outside still goes the fast way. 17% of a corridor's
+		// triangles used to fall back, at 2 ms a frame.
+		static FLOAT GuardBand = -1.f;
+		if( GuardBand < 0.f ) { INT Pct = 300; GetConfigInt( "PSP", "MeshGuardBand", Pct ); GuardBand = Clamp( Pct, 100, 700 ) / 100.f; }
+		const FLOAT RProjZ = appTan( Frame->Viewport->Actor->FovAngle * PI / 360.0 );
+		const FLOAT GBX = GuardBand * RProjZ, GBY = GuardBand * RProjZ * Frame->FY2 / Frame->FX2;
+		if( !( Frame->NearClip.W == 0.0 && Frame->Mirror != -1 && !(ExtraFlags & PF_Environment) ) )
+			STAT(GStat.MeshFallbackWhy[ Frame->NearClip.W != 0.0 ? 3 : Frame->Mirror == -1 ? 4 : 6 ] += VisibleTriangles);
+		if( Frame->NearClip.W == 0.0 && Frame->Mirror != -1 && !(ExtraFlags & PF_Environment) )
 		{
 			const FMeshTri** List = New<const FMeshTri*>(GMem,VisibleTriangles);
 			for( INT Tex=0; Tex<Mesh->Textures.Num(); Tex++ )
@@ -575,7 +670,7 @@ void URender::DrawMesh
 				for( INT s=0; s<NumSeen; s++ )
 				{
 					const DWORD PolyFlags = Seen[s];
-					if( PolyFlags & (PF_Invisible|PF_Unlit|PF_Environment) ) continue;
+					if( PolyFlags & (PF_Invisible|PF_Environment) ) { STAT(GStat.MeshFallbackWhy[2]++); continue; }
 					INT Count=0;
 					for( INT i=0; i<VisibleTriangles; i++ )
 					{
@@ -584,21 +679,34 @@ void URender::DrawMesh
 						const FTransTexture& A = Samples[Tri.iVertex[0]];
 						const FTransTexture& B = Samples[Tri.iVertex[1]];
 						const FTransTexture& C = Samples[Tri.iVertex[2]];
-						if( (A.Flags|B.Flags|C.Flags) || A.Point.Z<=1.f || B.Point.Z<=1.f || C.Point.Z<=1.f ) continue;
+						if( A.Point.Z<=1.f || B.Point.Z<=1.f || C.Point.Z<=1.f ) { STAT(GStat.MeshFallbackWhy[0]++); continue; }
+						if( (A.Flags|B.Flags|C.Flags)
+						&&	(	Abs(A.Point.X) > GBX*A.Point.Z || Abs(A.Point.Y) > GBY*A.Point.Z
+							||	Abs(B.Point.X) > GBX*B.Point.Z || Abs(B.Point.Y) > GBY*B.Point.Z
+							||	Abs(C.Point.X) > GBX*C.Point.Z || Abs(C.Point.Y) > GBY*C.Point.Z ) ) { STAT(GStat.MeshFallbackWhy[1]++); continue; }
 						List[Count++] = &Tri; Taken[i] = 1;
 					}
 					if( !Count ) continue;
+					// Unlit triangles take the actor's glow colour, as RenderSubsurface does.
+					if( PolyFlags & PF_Unlit )
+						for( INT i=0; i<Count; i++ )
+							for( INT j=0; j<3; j++ )
+								Samples[List[i]->iVertex[j]].Light = GUnlitColor;
 					FTextureInfo& Info = Textures[Tex] ? TextureInfo[Tex] : EnvironmentInfo;
 					const FLOAT US = Info.UScale * Info.USize / 256.0;
 					const FLOAT VS = Info.VScale * Info.VSize / 256.0;
+					STAT(uunclock(GStat.MeshListTime));
 					STAT(uclock(GStat.MeshTmapTime));
 					const UBOOL Ok = Frame->Viewport->RenDev->DrawMeshTris( Frame, Info, Samples, List, Count, PolyFlags, US, VS );
 					STAT(uunclock(GStat.MeshTmapTime));
+					STAT(uclock(GStat.MeshListTime));
 					if( !Ok )
 						for( INT i=0; i<VisibleTriangles; i++ ) if( Taken[i] && TriPool[i].Tri->TextureIndex==Tex && (TriPool[i].Tri->PolyFlags|ExtraFlags)==PolyFlags ) Taken[i]=0;
 				}
 			}
 		}
+		STAT(uunclock(GStat.MeshListTime));
+		STAT(uclock(GStat.MeshFallbackTime));
 #endif
 		for( INT i=0; i<VisibleTriangles; i++ )
 		{
@@ -607,6 +715,7 @@ void URender::DrawMesh
 #ifdef __PSP__
 			if( Taken[i] )
 				continue;
+			STAT(GStat.MeshFallbackTris++);
 #endif
 			if( !(Tri.PolyFlags & PF_Invisible) )
 			{
@@ -624,6 +733,10 @@ void URender::DrawMesh
 					Pts[j]    = &Samples[Tri.iVertex[j]];
 					Pts[j]->U = Tri.Tex[j].U * UScale;
 					Pts[j]->V = Tri.Tex[j].V * VScale;
+#ifdef __PSP__
+					if( !Pts[j]->Flags )
+						Pts[j]->Project( Frame );   // only the clipper needs screen coordinates
+#endif
 				}
 				if( Frame->Mirror == -1 )
 					Exchange( Pts[2], Pts[0] );
@@ -644,6 +757,11 @@ void URender::DrawMesh
 				HasSpecialCoords = 1;
 			}
 		}
+#ifdef __PSP__
+		STAT(uunclock(GStat.MeshFallbackTime));
+		if( LitItem )
+			LitItem->Unlock();
+#endif
 		GLightManager->FinishActor();
 		unguardSlow;
 		unguardSlow;

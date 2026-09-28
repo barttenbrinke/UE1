@@ -350,6 +350,8 @@ static SQWORD GPspAccIllum = 0, GPspAccOcclusion = 0, GPspAccMesh = 0, GPspAccPo
 static INT GPspAccClip = 0, GPspAccRaster = 0, GPspAccSpan = 0;   // OccludeBsp's own sub-timers
 static INT GPspAccMeshFrame = 0;                                     // UMesh::GetFrame (keyframe lerp + transform)
 static INT GPspAccMeshProc = 0, GPspAccMeshLight = 0, GPspAccMeshSub = 0, GPspAccMeshClip = 0, GPspAccMeshTmap = 0;
+static INT GPspAccMeshVertsCached = 0; static INT GPspAccKeyMiss[9], GPspAccFallbackWhy[7];
+static INT GPspAccMeshOutcode = 0, GPspAccMeshNormal = 0, GPspAccMeshLightCalc = 0, GPspAccMeshProject = 0, GPspAccMeshList = 0, GPspAccMeshFallback = 0, GPspAccMeshFallbackTris = 0, GPspAccMeshVertsLit = 0, GPspAccMeshActors = 0, GPspAccMeshLightSetup = 0;
 static INT GPspAccBox = 0;                                            // URender::BoundVisible (node bound tests)
 #endif
 
@@ -760,7 +762,16 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshSub), (FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshClip),
 				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshTmap) );
 			GPspAccClip = GPspAccRaster = GPspAccSpan = GPspAccMeshFrame = GPspAccBox = 0;
+			debugf( NAME_Log, "PSPPERF:   mesh2: %i actors, %i verts lit, %i cached, %i fallback tris | outcode %.0fms normals %.0fms lightsetup %.0fms lightcalc %.0fms project %.0fms lists %.0fms fallback %.0fms",
+				GPspAccMeshActors, GPspAccMeshVertsLit, GPspAccMeshVertsCached, GPspAccMeshFallbackTris,
+				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshOutcode), (FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshNormal), (FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshLightSetup),
+				(FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshLightCalc), (FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshProject), (FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshList), (FLOAT)(GSecondsPerCycle*1000*(DOUBLE)GPspAccMeshFallback) );
+			debugf( NAME_Log, "PSPPERF:   mesh3: light cache misses mesh %i seq %i anim %i loc %i rot %i scale %i sig %i other %i new %i | fast-path rejects near %i guard %i flags %i nearclip %i mirror %i unlit %i envmap %i",
+				GPspAccKeyMiss[0], GPspAccKeyMiss[1], GPspAccKeyMiss[2], GPspAccKeyMiss[3], GPspAccKeyMiss[4], GPspAccKeyMiss[5], GPspAccKeyMiss[6], GPspAccKeyMiss[7], GPspAccKeyMiss[8],
+				GPspAccFallbackWhy[0], GPspAccFallbackWhy[1], GPspAccFallbackWhy[2], GPspAccFallbackWhy[3], GPspAccFallbackWhy[4], GPspAccFallbackWhy[5], GPspAccFallbackWhy[6] );
+			appMemset( GPspAccKeyMiss, 0, sizeof(GPspAccKeyMiss) ); appMemset( GPspAccFallbackWhy, 0, sizeof(GPspAccFallbackWhy) );
 			GPspAccMeshProc = GPspAccMeshLight = GPspAccMeshSub = GPspAccMeshClip = GPspAccMeshTmap = 0;
+			GPspAccMeshOutcode = GPspAccMeshNormal = GPspAccMeshLightCalc = GPspAccMeshProject = GPspAccMeshList = GPspAccMeshFallback = GPspAccMeshFallbackTris = GPspAccMeshVertsLit = GPspAccMeshActors = GPspAccMeshLightSetup = GPspAccMeshVertsCached = 0;
 			GPspAccBind = GPspAccImage = GPspAccComplex = GPspAccGouraud = GPspAccTile = 0;
 			GPspAccIllum = GPspAccOcclusion = GPspAccMesh = GPspAccPolyV = 0;
 			GPspUploadLast = GPspUploadCount;
@@ -844,6 +855,11 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 	GPspAccMeshSub   += (INT)GStat.MeshSubTime;
 	GPspAccMeshClip  += (INT)GStat.MeshClipTime;
 	GPspAccMeshTmap  += (INT)GStat.MeshTmapTime;
+	GPspAccMeshOutcode += (INT)GStat.MeshOutcodeTime; GPspAccMeshNormal += (INT)GStat.MeshNormalTime; GPspAccMeshLightCalc += (INT)GStat.MeshLightCalcTime;
+	GPspAccMeshProject += (INT)GStat.MeshProjectTime; GPspAccMeshList += (INT)GStat.MeshListTime; GPspAccMeshFallback += (INT)GStat.MeshFallbackTime;
+	GPspAccMeshFallbackTris += GStat.MeshFallbackTris; GPspAccMeshVertsLit += GStat.MeshVertsLit; GPspAccMeshActors += GStat.MeshCount; GPspAccMeshLightSetup += (INT)GStat.MeshLightSetupTime; GPspAccMeshVertsCached += GStat.MeshVertsCached;
+	for( INT k = 0; k < 9; ++k ) GPspAccKeyMiss[k] += GStat.MeshKeyMiss[k];
+	for( INT k = 0; k < 7; ++k ) GPspAccFallbackWhy[k] += GStat.MeshFallbackWhy[k];
 #endif
 
 	unguard;
