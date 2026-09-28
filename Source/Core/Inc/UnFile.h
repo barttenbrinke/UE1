@@ -402,6 +402,7 @@ CORE_API void appPspIoBench( const char* Filename );
 // Per-frame stall attribution (the -AUTOWALK slow-frame log): cumulative counters.
 CORE_API extern INT   GPspCtrReloads, GPspCtrUploads, GPspCtrSounds, GPspCtrPreloads;
 CORE_API extern DWORD GPspReloadCycles, GPspPreloadCycles;
+CORE_API extern DWORD GPspSoundRegCycles, GPspTickCycles, GPspDrawCycles, GPspAudioCycles;   // per-frame phase timers (slow-frame log)
 CORE_API void appPspStickReport( char* Out, INT Max );   // top files by stick bytes since the last call
 CORE_API void appPspLoadCacheBegin();
 CORE_API void appPspLoadCacheEnd( INT& Files, INT& KB );

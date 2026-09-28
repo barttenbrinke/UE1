@@ -49,39 +49,50 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       a real but separate hazard and stays.
 - [ ] Vortex Rikers collapsing-floor sequence (save slot 0, 2026-09-28),
       replayed on the card with `-LOAD=0 -WALKDELAY=15 -AUTOWALK=12`.
-      Two separate problems:
-      (a) Standing at the save spot the scene runs at 12 fps before anything
-      happens: ~875 mesh polys/frame (corridor decorations), mesh pipeline
-      22 ms + occlusion 20 ms + polyv 9 ms + illum 6 ms per frame. The
-      lower deck after the drop runs 27 fps with 0 mesh polys. This is
-      the general "mesh-heavy view" cost, not the earthquake.
-      (b) During the collapse: single frames of 0.8-2 s, each fully
-      accounted for by appReloadObject of sounds played for the first
-      time (samples are deferred at load): 5-36 stick reads per stall at
-      20-400 ms each. FOUND: the reads are slow because the main thread
-      is starved, not because of the card. The raw driver benchmark run
-      from inside the walk (`PSPIOBENCH`) gives 21 ms per random 8 KB
-      seek+read with audio running and 1.7-2.4 ms with `-NOSOUND`; at
-      LoadMap end it is 2.4 ms either way. Thread priorities (lower wins):
-      SceFatmsMedia 16, psp_music 16, update_thread 17, openal-soft 22,
-      audioOutput 22, user_main 36 (dropped by 4 "so audio threads
-      preempt it"). During the earthquake the openal-soft mixer takes
-      35-57% of the CPU (7% in a four-bot match, 20% in DmRadikus at 16
-      voices), so every stick wait and every main-thread frame stretches
-      behind it. Reverb was off, HRTF is not requested (PSP_NO_EFX), so
-      the cost is per-voice mixing/resampling of up to 16 simultaneous
-      earthquake sounds. A/B switches are built (PRX only, not yet run:
-      the PSPLink shell died): `-RESAMPLER=N` (AL_SOFT_source_resampler,
-      the list is logged; 0 = nearest), `-MAXVOICES=N`, and the periodic
-      PSPSND line now counts playing voices. Candidate fixes, in order:
-      nearest resampler / fewer voices if that halves the mixer; prefetch
-      a level's sounds at load so nothing reloads mid-play; only then
-      consider the priority split (main thread must stay below audio or
-      the mixer skips, but a load-in-play could temporarily raise it).
+      What happens: the trigger tilts the floor, an Earthquake actor
+      throws the corpses in the corridor around, they gib into chunks
+      (CreatureChunks, Thigh, MaleHead, Arm1, Leg1, Stomach), 18
+      ExplosionChain actors fire, and every one of those needs meshes,
+      textures and sounds that were skipped at load. Four costs stack:
+      (a) The corridor view itself runs at 12 fps before anything happens:
+      ~800 mesh polys/frame (decorations, corpses), mesh pipeline 21 ms +
+      occlusion 22 ms + polyv 11 ms + illum 9 ms per frame. General
+      mesh-heavy-view cost; the lower deck runs 27 fps with 0 mesh polys.
+      (b) openal-soft (the SDK's 1.6.372) mixer thread at priority 22
+      above the main thread's 36 takes 25-57% of the CPU while the
+      earthquake plays 4-6 voices (7% in a bot match), so every stick
+      wait and every main-thread frame stretches behind it. Reverb is
+      off, HRTF is not requested, AL_SOFT_source_resampler does not
+      exist in this build; -MAXVOICES=6 lowers it to 16-34%. Real fix
+      is a cheaper mixer -- not started.
+      (c) Mid-play reloads (first-play sounds, first-draw textures,
+      chunk meshes) at ~60 ms per stick read because of (b): the raw
+      driver does 2 ms (`-IOCHECK`, `PSPIOBENCH` mid-walk). DONE:
+      appReloadObject raises the main thread to priority 20 for the
+      reload (`[PSP] ReloadPriority`, `-RELOADPRIO=`): stall stick share
+      1.2 s -> 0.1-0.2 s. DONE: the smallest deferred sounds are
+      registered after each level load up to `[PSP] SoundPrefetchKB`
+      (1536; keep under SoundBudgetKB); this level has 157 deferred
+      sounds / 5.4 MB, so the budget covers ~87 of them.
+      (d) Timer bunching: ULevel::Tick clamped the step at 0.4 s, so a
+      stalled frame let all 18 ExplosionChain delays (0.3-0.9 s) expire
+      together: one 2 s frame (HurtRadius = VisibleCollidingActors, a
+      line check per actor in radius, ~35 ms per explosion), which
+      stalled the next frame, which bunched the next batch. DONE:
+      `[PSP] MaxDeltaMs` (200; 100 made the sequence run in slow motion
+      and the player crossed the pit before it opened).
+      Result on the card build under PSPLink: worst frame 4.2 s -> 1.4 s,
+      but 14 frames over 250 ms remain (some are the USB log itself).
+      Next levers: the mixer (b), then the mesh pipeline (a).
       Tools: `PSPTEST: slow frame` lines (every frame >60 ms while the walk
-      runs, with deltas of stick ms/reads/reopens/seeks, linker preload ms,
-      reloads, uploads, sounds, mesh reload KB), per-file stick attribution
-      on the frame report and on the LoadMap line (`appPspStickReport`).
+      runs: deltas of stick ms/reads/reopens/seeks, linker preload ms,
+      reloads, uploads, sounds + RegisterSound ms, mesh reload KB, tick /
+      draw / audio ms, level script/actor/move/spawn counters and the top
+      six actor classes by tick time -- PSP_KEEP_UCLOCK builds only),
+      per-file stick attribution on the frame report and the LoadMap
+      line (`appPspStickReport`), `PSPIO:` lines for kernel reads over 10
+      ms, `-IOCHECK` / `appPspIoBench` raw driver cost, `PSPSND: after
+      load` sound census, `-MAXVOICES=`, `-OUTPUTRATE=`, `-RESAMPLER=`.
 - [ ] Crash replay from a save (2026-09-28): `-LOAD=N` loads save slot N
       (0 is valid) as soon as the entry level is up; `-AUTOWALK=secs` then
       holds the stick full forward (NSDLDrv injects SDL's -32767 on LEFTY

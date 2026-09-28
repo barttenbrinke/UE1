@@ -588,6 +588,9 @@ UBOOL UNOpenALAudioSubsystem::Init()
 
 	if( MusicInterpolation > XMP_INTERP_SPLINE )
 		MusicInterpolation = XMP_INTERP_SPLINE;
+#ifdef __PSP__
+	Parse( appCmdLine(), "OUTPUTRATE=", OutputRate );   // hardware A/B of the mixer's per-sample cost
+#endif
 	if( MusicRate <= 0 )
 		MusicRate = OutputRate;
 
@@ -978,6 +981,7 @@ void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
 	guard(UNOpenALAudioSubsystem::RegisterSound)
 #ifdef __PSP__
 	++GPspCtrSounds;
+	struct FRegTimer { DWORD C; ~FRegTimer() { GPspSoundRegCycles += (DWORD)( appCycles() - C ); } } RegTimer = { appCycles() };
 #endif
 
 	if( Sound->Handle )

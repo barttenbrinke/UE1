@@ -559,6 +559,17 @@ void ULevel::TickNetServer( FLOAT DeltaSeconds )
 // Update the level after a variable amount of time, DeltaSeconds, has passed.
 // All child actors are ticked after their owners have been ticked.
 //
+#if defined(__PSP__) && defined(PSP_KEEP_UCLOCK)
+struct FPspTickClass { UClass* Class; DWORD Cycles; INT Count; };
+ENGINE_API FPspTickClass GPspTickClass[48]; ENGINE_API INT GPspTickClassNum = 0;
+ENGINE_API void PspTickTop( char* Out, INT Max )
+{
+	for( INT i = 0; i < GPspTickClassNum; ++i ) for( INT j = i + 1; j < GPspTickClassNum; ++j ) if( GPspTickClass[j].Cycles > GPspTickClass[i].Cycles ) Exchange( GPspTickClass[i], GPspTickClass[j] );
+	INT Len = 0; Out[0] = 0;
+	for( INT i = 0; i < Min( GPspTickClassNum, 6 ) && Len < Max - 60; ++i )
+		Len += appSprintf( Out + Len, "%s%s x%i %.0f ms", i ? ", " : "", GPspTickClass[i].Class ? GPspTickClass[i].Class->GetName() : "?", GPspTickClass[i].Count, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)GPspTickClass[i].Cycles ) );
+}
+#endif
 void ULevel::Tick( ELevelTick TickType, FLOAT DeltaSeconds )
 {
 	guard(ULevel::Tick);
@@ -591,7 +602,19 @@ void ULevel::Tick( ELevelTick TickType, FLOAT DeltaSeconds )
 
 	// Clamp time between 1000 fps and 2.5 fps.
 	// Generally it is more useful to outright disable this line as 1000+ FPS will speed the game up.
+#ifdef __PSP__
+	// A stalled frame (asset loads, gibbing corpses) advanced the game by up
+	// to 0.4 s at once, so every pending timer expired together -- the
+	// Vortex Rikers collapse fired 18 chained explosions in one tick, which
+	// stalled the next frame, which bunched the next batch. Cap the step so
+	// the world runs in slow motion through a stall instead of catching up.
+	//   [PSP] MaxDeltaMs=200
+	static FLOAT MaxStep = -1.f;
+	if( MaxStep < 0.f ) { INT Ms = 200; GetConfigInt( "PSP", "MaxDeltaMs", Ms ); MaxStep = Clamp( Ms, 20, 400 ) / 1000.f; }   // 100 ran the collapse in slow motion (the player crossed the pit before it opened); 200 halves the bunching
+	DeltaSeconds = Clamp(DeltaSeconds,0.001f,MaxStep);
+#else
 	DeltaSeconds = Clamp(DeltaSeconds,0.001f,0.40f);
+#endif
 
 	// If caller wants time update only, or we are paused, skip the rest.
 	if
@@ -603,9 +626,26 @@ void ULevel::Tick( ELevelTick TickType, FLOAT DeltaSeconds )
 		uclock(ActorTickCycles);
 		NewlySpawned=NULL;
 		INT Updated=0;
+#if defined(__PSP__) && defined(PSP_KEEP_UCLOCK)
+		// Per-class tick time for the slow-frame log (previous frame's table
+		// is read from UGameEngine::Tick before this loop runs again).
+		GPspTickClassNum = 0;
+		for( INT iActor=iFirstDynamicActor; iActor<Num(); iActor++ )
+			if( Actors(iActor) )
+			{
+				UClass* C = Actors(iActor)->GetClass();   // before the tick: the actor may destroy itself in it
+				const DWORD C0 = appCycles();
+				Updated += Actors(iActor)->Tick(DeltaSeconds,TickType);
+				const DWORD D = (DWORD)( appCycles() - C0 );
+				INT k; for( k = 0; k < GPspTickClassNum; ++k ) if( GPspTickClass[k].Class == C ) break;
+				if( k == GPspTickClassNum && k < 48 ) { GPspTickClass[k].Class = C; GPspTickClass[k].Cycles = 0; GPspTickClass[k].Count = 0; ++GPspTickClassNum; }
+				if( k < 48 ) { GPspTickClass[k].Cycles += D; ++GPspTickClass[k].Count; }
+			}
+#else
 		for( INT iActor=iFirstDynamicActor; iActor<Num(); iActor++ )
 			if( Actors(iActor) )
 				Updated += Actors(iActor)->Tick(DeltaSeconds,TickType);
+#endif
 		while( NewlySpawned && Updated )
 		{
 			FActorLink* Link=NewlySpawned;

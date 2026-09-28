@@ -368,6 +368,7 @@ CORE_API INT GPspMeshReloadKB = 0;
 CORE_API FLOAT GPspAutoWalkLeft = 0.f;
 CORE_API INT   GPspCtrReloads = 0, GPspCtrUploads = 0, GPspCtrSounds = 0, GPspCtrPreloads = 0;
 CORE_API DWORD GPspReloadCycles = 0, GPspPreloadCycles = 0;
+CORE_API DWORD GPspSoundRegCycles = 0, GPspTickCycles = 0, GPspDrawCycles = 0, GPspAudioCycles = 0;
 CORE_API INT appPspHeapUsedKB()
 {
 	return mallinfo().uordblks / 1024;

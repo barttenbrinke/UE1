@@ -584,7 +584,41 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 	{
 		ULevel* L = Engine->GLevel; INT NullActors = 0;
 		PspPrefetchLevel( L );
+		// Sounds: samples are deferred at load and fetched on first play, and
+		// a first play mid-action (the Vortex Rikers earthquake gibbing the
+		// corpses) stalled whole frames. Register the smallest deferred
+		// sounds now, up to [PSP] SoundPrefetchKB (keep it under
+		// SoundBudgetKB or the budget evicts what was just fetched).
+		if( Engine->Audio )
+		{
+			static INT PrefetchKB = -1;
+			if( PrefetchKB < 0 ) { PrefetchKB = 1536; GetConfigInt( "PSP", "SoundPrefetchKB", PrefetchKB ); }
+			TArray<USound*> Deferred;
+			for( TObjectIterator<USound> It; It; ++It )
+				if( !It->Data.Num() && It->GetLinker() && It->OriginalSize > 0 )
+					Deferred.AddItem( *It );
+			for( INT i = 0; i < Deferred.Num(); i++ ) for( INT j = i + 1; j < Deferred.Num(); j++ ) if( Deferred(j)->OriginalSize < Deferred(i)->OriginalSize ) Exchange( Deferred(i), Deferred(j) );
+			INT KB = 0, N = 0; const DOUBLE T1 = appSeconds();
+			for( INT i = 0; i < Deferred.Num() && PrefetchKB > 0; i++ )
+			{
+				if( KB + Deferred(i)->OriginalSize / 1024 > PrefetchKB ) break;
+				Engine->Audio->RegisterSound( Deferred(i) );
+				KB += Deferred(i)->OriginalSize / 1024; ++N;
+			}
+			debugf( NAME_Log, "PSPPERF: prefetched %i of %i deferred sounds (%i KB of %i) in %.1f s", N, Deferred.Num(), KB, PrefetchKB, (FLOAT)( appSeconds() - T1 ) );
+		}
 		INT CacheFiles = 0, CacheKB = 0; appPspLoadCacheEnd( CacheFiles, CacheKB );
+		{
+			// Sound census: how much a sound prefetch at load would have to bring in.
+			INT NSnd = 0, NDeferred = 0, KBDeferred = 0, KBResident = 0;
+			for( TObjectIterator<USound> It; It; ++It )
+			{
+				++NSnd;
+				if( It->Data.Num() ) KBResident += It->Data.Num() / 1024;
+				else if( It->GetLinker() ) { ++NDeferred; KBDeferred += It->OriginalSize / 1024; }
+			}
+			debugf( NAME_Log, "PSPSND: after load %i sounds: %i deferred (%i KB in packages), %i KB resident", NSnd, NDeferred, KBDeferred, KBResident );
+		}
 		{
 			INT Walk = 0, Delay = 0; Parse( appCmdLine(), "AUTOWALK=", Walk ); Parse( appCmdLine(), "WALKDELAY=", Delay );
 			if( Walk > 0 && appStrstr( Map, "?load" ) ) { GPspAutoWalkPending = (FLOAT)Walk; GPspAutoWalkDelay = (FLOAT)Delay; debugf( NAME_Log, "PSPTEST: autowalk %i s after %i s", Walk, Delay ); }
@@ -1109,7 +1143,9 @@ void UGameEngine::Draw( UViewport* Viewport, BYTE* HitData, INT* HitSize )
 	if( Audio )
 	{
 		uclock(GLevel->AudioTickCycles);
+		const DWORD PspC0 = appCycles();
 		Audio->Update( ViewActor->Region, Frame->Coords );
+		GPspAudioCycles += (DWORD)( appCycles() - PspC0 );
 		uunclock(GLevel->AudioTickCycles);
 	}
 	FMemMark MemMark(GMem);
@@ -1263,8 +1299,12 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 	guard(TickLevel);
 	GameCycles=0;
 	uclock(GameCycles);
-	if( GLevel )
-		GLevel->Tick( LEVELTICK_All, DeltaSeconds );
+	{
+		const DWORD PspC0 = appCycles();
+		if( GLevel )
+			GLevel->Tick( LEVELTICK_All, DeltaSeconds );
+		GPspTickCycles += (DWORD)( appCycles() - PspC0 );
+	}
 	if( Client && Client->Viewports.Num() && Client->Viewports(0)->Actor->XLevel!=GLevel )
 		Client->Viewports(0)->Actor->XLevel->Tick( LEVELTICK_All, DeltaSeconds );
 	uunclock(GameCycles);
@@ -1317,7 +1357,8 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 		{
 			static DOUBLE LastT = 0.0; const DOUBLE Now = appSeconds();
 			extern CORE_API INT GPspFileRefills, GPspFileRefillBytes, GPspFileReopens, GPspFileSeeks; extern CORE_API SQWORD GPspFileIoCycles;
-			static SQWORD Io0 = 0; static DWORD Pre0 = 0, RelC0 = 0; static INT Refills0 = 0, Bytes0 = 0, Preloads0 = 0, Reloads0 = 0, Uploads0 = 0, Sounds0 = 0, Mesh0 = 0, Reopens0 = 0, Seeks0 = 0;
+			static INT Script0 = 0, ActorT0 = 0, Move0 = 0, NumMoves0 = 0, Spawn0 = 0, See0 = 0, Path0 = 0;
+			static SQWORD Io0 = 0; static DWORD Pre0 = 0, RelC0 = 0, SndC0 = 0, TickC0 = 0, DrawC0 = 0, AudC0 = 0; static INT Refills0 = 0, Bytes0 = 0, Preloads0 = 0, Reloads0 = 0, Uploads0 = 0, Sounds0 = 0, Mesh0 = 0, Reopens0 = 0, Seeks0 = 0;
 			if( LastT > 0.0 && GPspAutoWalkT0 > 0.0 && Now - GPspAutoWalkT0 < 60.0 && Now - LastT > 0.06 && GLevel )
 			{
 				for( INT i = 0; i < GLevel->Num(); i++ )
@@ -1325,11 +1366,18 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 					APlayerPawn* P = Cast<APlayerPawn>( GLevel->Element(i) );
 					if( P && P->Player )
 					{
-						debugf( NAME_Log, "PSPTEST: slow frame %.0f ms at t+%.1f s, pawn (%.0f,%.0f,%.0f) physics %i | stick %.0f ms (%i reads %i KB, %i reopens %i seeks) linker %.0f ms (%i preloads) reloads %i (%.0f ms) uploads %i sounds %i meshreload +%i KB",
+						char Top[256] = "";
+#ifdef PSP_KEEP_UCLOCK
+						extern ENGINE_API void PspTickTop( char* Out, INT Max ); PspTickTop( Top, 256 );
+#endif
+						debugf( NAME_Log, "PSPTEST: slow frame %.0f ms at t+%.1f s, pawn (%.0f,%.0f,%.0f) physics %i | stick %.0f ms (%i reads %i KB, %i reopens %i seeks) linker %.0f ms (%i preloads) reloads %i (%.0f ms) uploads %i sounds %i (%.0f ms in RegisterSound) meshreload +%i KB | tick %.0f ms draw %.0f ms audio %.0f ms | script %.0f actors %.0f move %.0f (%i) spawn %.0f see %.0f path %.0f ms | top: %s",
 							(FLOAT)( ( Now - LastT ) * 1000.0 ), (FLOAT)( Now - GPspAutoWalkT0 ), P->Location.X, P->Location.Y, P->Location.Z, (INT)P->Physics,
 							(FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspFileIoCycles - Io0 ) ), GPspFileRefills - Refills0, ( GPspFileRefillBytes - Bytes0 ) / 1024, GPspFileReopens - Reopens0, GPspFileSeeks - Seeks0,
 							(FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspPreloadCycles - Pre0 ) ), GPspCtrPreloads - Preloads0,
-							GPspCtrReloads - Reloads0, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspReloadCycles - RelC0 ) ), GPspCtrUploads - Uploads0, GPspCtrSounds - Sounds0, GPspMeshReloadKB - Mesh0 );
+							GPspCtrReloads - Reloads0, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspReloadCycles - RelC0 ) ), GPspCtrUploads - Uploads0, GPspCtrSounds - Sounds0, (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspSoundRegCycles - SndC0 ) ), GPspMeshReloadKB - Mesh0,
+							(FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspTickCycles - TickC0 ) ), (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspDrawCycles - DrawC0 ) ), (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GPspAudioCycles - AudC0 ) ),
+							(FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GScriptCycles - Script0 ) ), (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GLevel->ActorTickCycles - ActorT0 ) ), (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GLevel->MoveCycles - Move0 ) ), GLevel->NumMoves - NumMoves0,
+							(FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GLevel->Spawning - Spawn0 ) ), (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GLevel->SeePlayer - See0 ) ), (FLOAT)( GSecondsPerCycle * 1000.0 * (DOUBLE)( GLevel->FindPathCycles - Path0 ) ), Top );
 						break;
 					}
 				}
@@ -1337,6 +1385,8 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 			LastT = Now;
 			Io0 = GPspFileIoCycles; Refills0 = GPspFileRefills; Bytes0 = GPspFileRefillBytes; Pre0 = GPspPreloadCycles; Preloads0 = GPspCtrPreloads;
 			Reloads0 = GPspCtrReloads; RelC0 = GPspReloadCycles; Uploads0 = GPspCtrUploads; Sounds0 = GPspCtrSounds; Mesh0 = GPspMeshReloadKB; Reopens0 = GPspFileReopens; Seeks0 = GPspFileSeeks;
+			SndC0 = GPspSoundRegCycles; TickC0 = GPspTickCycles; DrawC0 = GPspDrawCycles; AudC0 = GPspAudioCycles;
+			if( GLevel ) { Script0 = GScriptCycles; ActorT0 = GLevel->ActorTickCycles; Move0 = GLevel->MoveCycles; NumMoves0 = GLevel->NumMoves; Spawn0 = GLevel->Spawning; See0 = GLevel->SeePlayer; Path0 = GLevel->FindPathCycles; }
 		}
 		if( GPspAutoWalkLeft > 0.f )
 		{
@@ -1477,7 +1527,9 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 	if( Client )
 	{
 		uclock(LocalClientCycles);
+		const DWORD PspC0 = appCycles();
 		Client->Tick();
+		GPspDrawCycles += (DWORD)( appCycles() - PspC0 );
 		uunclock(LocalClientCycles);
 	}
 	ClientCycles=LocalClientCycles;

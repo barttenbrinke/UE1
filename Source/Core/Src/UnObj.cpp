@@ -7,6 +7,9 @@
 =============================================================================*/
 
 #include "CorePrivate.h" 
+#ifdef __PSP__
+#include <pspthreadman.h>
+#endif
 
 /*-----------------------------------------------------------------------------
 	Globals.
@@ -3523,7 +3526,17 @@ CORE_API UBOOL appReloadObject( UObject* Object )
 	Object->SetFlags( RF_NeedLoad );
 	++GPspReloading; ++GPspCtrReloads;
 	const DWORD C0 = appCycles();
+	// The mixer thread (priority 22) pre-empts the main thread (36) and
+	// stretched every Memory Stick wait of a mid-play reload 10x (2 -> 21 ms
+	// per read: -IOCHECK from inside the walk). A reload is short and the
+	// audio output buffer holds ~46 ms, so step above the mixer for its
+	// duration.   [PSP] ReloadPriority=20 (0 = leave it)
+	static INT Boost = -1;
+	if( Boost < 0 ) { Boost = 20; GetConfigInt( "PSP", "ReloadPriority", Boost ); Parse( appCmdLine(), "RELOADPRIO=", Boost ); }
+	const INT Was = Boost > 0 ? sceKernelGetThreadCurrentPriority() : 0;
+	if( Boost > 0 && Was > Boost ) sceKernelChangeThreadPriority( sceKernelGetThreadId(), Boost );
 	Object->GetLinker()->Preload( Object );
+	if( Boost > 0 && Was > Boost ) sceKernelChangeThreadPriority( sceKernelGetThreadId(), Was );
 	GPspReloadCycles += (DWORD)( appCycles() - C0 );
 	--GPspReloading;
 	return !( Object->GetFlags() & RF_NeedLoad );
