@@ -303,6 +303,38 @@ static void MatchViewportsToActors( UClient* Client, ULevel* Level, const FURL& 
 //
 // Browse to a specified URL, relative to the current one.
 //
+#ifdef __PSP__
+// Two full levels never fit the PSP heap at once: LoadMap keeps the old
+// level alive until the new one is in, and the intro map plus Vortex2 ran
+// the heap dry (appMalloc returned NULL inside UPolys and the load died at a
+// null pointer). So hop through the small, already-resident Entry level
+// first: that shuts the old level down and lets garbage collection free it
+// before the real load starts. Data the last level prefetched or played
+// lives on objects the class packages keep alive, so garbage collection
+// alone leaves it: the previous level's meshes (4 MB in a bot match) and its
+// registered sounds (2 MB) survived into the next one, and Dig no longer
+// loaded after NyLeve. Drop both; the new level prefetches.
+UBOOL UGameEngine::PspReleaseLevel( const char* What, char* Error256 )
+{
+	guard(UGameEngine::PspReleaseLevel);
+	if( !GLevel || GLevel == GEntry || appStricmp( What, "Entry" ) == 0 )
+		return 1;
+	debugf( NAME_Log, "PSP: releasing %s before loading %s", GLevel->GetPathName(), What );
+	if( !LoadMap( FURL( &LastURL, "Entry", TRAVEL_Partial ), NULL, Error256 ) )
+		return 0;
+	extern ENGINE_API INT PspMeshDropAll();
+	const INT MeshKB = PspMeshDropAll();
+	INT Sounds = 0;
+	if( Audio )
+		for( TObjectIterator<USound> It; It; ++It )
+			if( It->Handle ) { Audio->UnregisterSound( *It ); ++Sounds; }
+	debugf( NAME_Log, "PSP: dropped %i KB of mesh data and %i registered sounds before the load", MeshKB, Sounds );
+	GObj.CollectGarbage( GSystem, RF_Intrinsic );
+	debugf( NAME_Log, "PSP: released; %s", appPspHeapState() );
+	return 1;
+	unguard;
+}
+#endif
 UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 {
 	guard(UGameEngine::Browse);
@@ -370,6 +402,12 @@ UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 		char Temp[256], Error256[256];
 		// URL, not a file path: FURL takes a forward slash as a host separator, so keep the backslash (the PSP file layer converts it)
 		appSprintf( Temp, "%s\\Save%i.usa?load", GSys->SavePath, appAtoi(Option) );
+#ifdef __PSP__
+		// A save loaded from inside a level landed on top of that level (this
+		// branch bypasses the map path's release): two levels never fit.
+		if( !PspReleaseLevel( "a saved game", Error256 ) )
+			return 0;
+#endif
 		if( LoadMap(FURL(&LastURL,Temp,TRAVEL_Partial),NULL,Error256) )
 		{
 			// Copy the hub stack.
@@ -407,28 +445,8 @@ UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 		// the load died at a null pointer). So hop through the small,
 		// already-resident Entry level first: that shuts the old level down
 		// and lets garbage collection free it before the real load starts.
-		if( GLevel && GLevel != GEntry && appStricmp( *URL.Map, "Entry" ) != 0 )
-		{
-			debugf( NAME_Log, "PSP: releasing %s before loading %s", GLevel->GetPathName(), *URL.Map );
-			if( !LoadMap( FURL( &LastURL, "Entry", TRAVEL_Partial ), NULL, Error256 ) )
-				return 0;
-			// Data the last level prefetched or played lives on objects the
-			// class packages keep alive, so garbage collection alone leaves
-			// it: the previous level's meshes (4 MB in a bot match) and its
-			// registered sounds (2 MB) survived into the next one, and Dig no
-			// longer loaded after NyLeve. Drop both; the new level prefetches.
-			{
-				extern ENGINE_API INT PspMeshDropAll();
-				const INT MeshKB = PspMeshDropAll();
-				INT Sounds = 0;
-				if( Audio )
-					for( TObjectIterator<USound> It; It; ++It )
-						if( It->Handle ) { Audio->UnregisterSound( *It ); ++Sounds; }
-				debugf( NAME_Log, "PSP: dropped %i KB of mesh data and %i registered sounds before the load", MeshKB, Sounds );
-			}
-			GObj.CollectGarbage( GSystem, RF_Intrinsic );
-			debugf( NAME_Log, "PSP: released; %s", appPspHeapState() );
-		}
+		if( !PspReleaseLevel( *URL.Map, Error256 ) )
+			return 0;
 #endif
 		return LoadMap( URL, NULL, Error256 )!=NULL;
 		unguard;
@@ -1355,9 +1373,9 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 	// saved level is running. Together they replay a crash from a save made
 	// just before it, without anyone at the controls.
 	{
-		static INT Slot = -2; static UBOOL Done = 0;
-		if( Slot == -2 ) { Slot = -1; if( !Parse( appCmdLine(), "LOAD=", Slot ) ) Slot = -1; }   // slot 0 is a real slot
-		if( Slot >= 0 && !Done && GLevel )
+		static INT Slot = -2; static UBOOL Done = 0; static INT LoadAt = 0;
+		if( Slot == -2 ) { Slot = -1; if( !Parse( appCmdLine(), "LOAD=", Slot ) ) Slot = -1; Parse( appCmdLine(), "LOADAT=", LoadAt ); }   // slot 0 is a real slot; -LOADAT=secs waits (load from inside a running level, as the menu does)
+		if( Slot >= 0 && !Done && GLevel && appSeconds() >= (DOUBLE)LoadAt )
 		{
 			Done = 1;
 			char Cmd[64]; appSprintf( Cmd, "START ?load=%i", Slot );

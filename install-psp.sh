@@ -96,7 +96,7 @@ LightMaps=1       ; 0 drops the lightmap pass entirely (debug/bisect switch)
 LightMapHz=0      ; dynamic lightmap rebuild rate; 0 = every frame
 LightFX=1         ; torch/fire/water light waver effects
 VertexLight=1     ; fold lightmap into vertex colour: one geometry pass, not two
-LightScale=150    ; VertexLight brightness %, 100 matches the two-pass original
+LightScale=130    ; VertexLight brightness %, 100 matches the two-pass original (150 clipped the bright areas on the LCD; the LightGamma lift keeps the dark ones)
 Gamma=150         ; base texture gamma %, 100 = off
 LightGamma=280    ; lightmap curve %, 100 = linear; lifts dark areas without saturating bright ones (210 was still too dark on the LCD)
 VertexArrays=1    ; 0 = stock immediate-mode renderer (bisect switch)

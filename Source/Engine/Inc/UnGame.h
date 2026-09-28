@@ -47,6 +47,9 @@ class ENGINE_API UGameEngine : public UEngine
 	void SetProgress( const char* Str1, const char* Str2, FLOAT Seconds );
 
 	// UGameEngine interface.
+#ifdef __PSP__
+	UBOOL PspReleaseLevel( const char* What, char* Error256 );   // hop through Entry, drop prefetched data, collect garbage
+#endif
 	virtual UBOOL Browse( FURL URL, char* Error256 );
 	virtual ULevel* LoadMap( const FURL& URL, UPendingLevel* Pending, char* Error256 );
 	virtual void SaveGame( INT Position );
