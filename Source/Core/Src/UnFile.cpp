@@ -365,6 +365,7 @@ CORE_API const char* appPspHeapState()
 // main thread while the mixer thread allocates.
 static char* GPspHeapBase = NULL;
 CORE_API INT GPspMeshReloadKB = 0;
+CORE_API FLOAT GPspAutoWalkLeft = 0.f;
 CORE_API INT appPspHeapUsedKB()
 {
 	return mallinfo().uordblks / 1024;

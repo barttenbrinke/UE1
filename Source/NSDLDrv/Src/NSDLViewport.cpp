@@ -915,6 +915,15 @@ UBOOL UNSDLViewport::TickInput()
 		}
 	}
 
+#ifdef __PSP__
+	// -AUTOWALK: stand in for a thumb on the stick (full forward, SDL's
+	// negative Y) until the engine's countdown runs out. A real stick
+	// movement overrides it for that frame through the event above.
+	if( GPspAutoWalkLeft > 0.f && JoyAxis[SDL_CONTROLLER_AXIS_LEFTY] == 0 )
+		JoyAxis[SDL_CONTROLLER_AXIS_LEFTY] = -32767;
+	else if( GPspAutoWalkLeft <= 0.f && JoyAxis[SDL_CONTROLLER_AXIS_LEFTY] == -32767 && ( !Client->GetController() || !SDL_GameControllerGetAxis( Client->GetController(), SDL_CONTROLLER_AXIS_LEFTY ) ) )
+		JoyAxis[SDL_CONTROLLER_AXIS_LEFTY] = 0;
+#endif
 	// Constantly hammer the input system with axis events for axes that are not zero.
 	for ( INT i = 0; i < SDL_CONTROLLER_AXIS_MAX; ++i )
 	{

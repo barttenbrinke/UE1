@@ -47,6 +47,16 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       array would then be NULL -- untested, left alone.
       The dynamic-texture copy ring (three slots -> 512 KB byte ring) was
       a real but separate hazard and stays.
+- [ ] Crash replay from a save (2026-09-28): `-LOAD=N` loads save slot N
+      as soon as the entry level is up; `-AUTOWALK=secs` then holds the
+      stick full forward (NSDLDrv injects SDL's -32767 on LEFTY while the
+      engine counts `GPspAutoWalkLeft` down) once the saved level runs.
+      Workflow: save in-game facing the crash, pull `Save/SaveN.usa` (plus
+      `SaveN0.usa`... for hubs) over PSPLink into the PPSSPP Save folder,
+      run with `-LOAD=N -AUTOWALK=10` in the emulator first, then on the
+      PSP under PSPLink for the exception address. Verified in the
+      emulator with the save-test slot; the first frame after the load
+      feeds one oversized axis step (dt = load time) -- harmless so far.
 - [ ] Level load time, remaining half: on the card an Entry load is now
       7.3 s of which 4.0 s is stick I/O, DmRadikus 14.3 s / 7.7 s. The
       `-REFILLKB` A/B (see the done list) showed bytes moved, not read

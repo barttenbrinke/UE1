@@ -581,6 +581,10 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 		ULevel* L = Engine->GLevel; INT NullActors = 0;
 		PspPrefetchLevel( L );
 		INT CacheFiles = 0, CacheKB = 0; appPspLoadCacheEnd( CacheFiles, CacheKB );
+		{
+			INT Walk = 0; Parse( appCmdLine(), "AUTOWALK=", Walk );
+			if( Walk > 0 && appStrstr( Map, "?load" ) ) { GPspAutoWalkLeft = (FLOAT)Walk; debugf( NAME_Log, "PSPTEST: autowalk %i s", Walk ); }
+		}
 		if( L ) for( INT i = 0; i < L->Num(); ++i ) if( !L->Actors(i) ) ++NullActors;
 		debugf( NAME_Log, "PSPPERF: LoadMap %s took %.1f s; %s; actors %i (%i null); stick: %i refills %i KB, %.1f s in read/seek/open, %i seeks, %i reopens; %i files (%i KB) read whole",
 			Map, (FLOAT)( appSeconds() - T0 ), appPspHeapState(), L ? L->Num() : 0, NullActors,
@@ -1276,6 +1280,26 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 				GLevel->GetLevelInfo()->NextSwitchCountdown = 0.f;
 				Left = (FLOAT)Cycle;
 			}
+		}
+	}
+	// -LOAD=N: load save slot N as soon as the entry level is up, then
+	// -AUTOWALK=secs holds the stick full forward for that long once the
+	// saved level is running. Together they replay a crash from a save made
+	// just before it, without anyone at the controls.
+	{
+		static INT Slot = -1; static UBOOL Done = 0;
+		if( Slot < 0 ) { Slot = 0; Parse( appCmdLine(), "LOAD=", Slot ); }
+		if( Slot > 0 && !Done && GLevel )
+		{
+			Done = 1;
+			char Cmd[64]; appSprintf( Cmd, "START ?load=%i", Slot );
+			debugf( NAME_Log, "PSPTEST: %s", Cmd );
+			Exec( Cmd, GSystem );
+		}
+		if( GPspAutoWalkLeft > 0.f )
+		{
+			GPspAutoWalkLeft -= DeltaSeconds;
+			if( GPspAutoWalkLeft <= 0.f ) debugf( NAME_Log, "PSPTEST: autowalk finished" );
 		}
 	}
 	// -SAVETEST=secs (test hook): save to slot 9 after N seconds in a map,
