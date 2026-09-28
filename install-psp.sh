@@ -84,6 +84,13 @@ sed -i '' \
   -e 's|^UseReverb=.*|UseReverb=False|' \
   "$DEST/System/Default.ini" "$DEST/System/Unreal.ini"
 
+# The intro's "Press ESC to begin" is a localized property of IntroNullHud
+# (Unreal.u); the .int file overrides it without touching the script. START
+# is bound to ShowMenu, the same action ESC performs.
+if ! grep -q '^\[IntroNullHud\]' "$DEST/System/Unreal.int"; then
+  printf '\r\n[IntroNullHud]\r\nESCMessage=Press START to begin\r\n' >> "$DEST/System/Unreal.int"
+fi
+
 # PSP-specific tunables. Kept here rather than in Engine/Config so the upstream
 # defaults (which the Vita and PC builds rely on) stay untouched.
 if ! grep -q '^\[PSP\]' "$DEST/System/Unreal.ini"; then
