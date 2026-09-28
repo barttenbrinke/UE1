@@ -842,7 +842,7 @@ enum
 	PSP_MAX_FILES          = 96,     // logical slots: a level change keeps both levels' packages open (32 was hit by Vortex2 -- 'Error opening file')
 	PSP_FILE_BUFSZ         = 16384,
 	PSP_FILE_WINDOWS       = 16,     // read windows per file during a level load (4: -9% reads, 16: -13%, 64: -22% vs one; diminishing)
-	PSP_FILE_MINREFILL     = 2048,    // first read after a seek; doubles while sequential
+	PSP_FILE_MINREFILL     = 1024,    // first read after a seek; doubles while sequential. Hardware DmRadikus load: 1 KB 14.3 s, 2 KB 15.1, 4 KB 16.8, 8 KB 19.1, 16 KB 24.2 -- bytes moved, not read count, set the time
 	PSP_MAX_KERNEL_HANDLES = 6,
 };
 struct FPspFile

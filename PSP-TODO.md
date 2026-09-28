@@ -27,12 +27,14 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
 - [ ] OpenAL mixer on the Media Engine: no longer worth it (2% without
       reverb). Reverb on the ME would be, if the reverb is wanted back.
 
-- [ ] Level load time (hardware only): the load profile had 8.6k window
-      refills for 27 MB, i.e. ~3 KB per Memory Stick read, because the
-      first refill after a seek starts at 2 KB. Per-read latency likely
-      dominates. `-REFILLKB=N` (2..16) and the new "LoadMap ... took" log
-      line give the A/B; bulk-serialising POD arrays (FColor is read as
-      four separate bytes, FMeshVert as one int) is the follow-up.
+- [ ] Level load time, remaining half: on the card an Entry load is now
+      7.3 s of which 4.0 s is stick I/O, DmRadikus 14.3 s / 7.7 s. The
+      `-REFILLKB` A/B (see the done list) showed bytes moved, not read
+      count, set the I/O time, so the next lever is reading less: the
+      loader still pulls ~5.5 MB (Entry) / 12.5 MB (DmRadikus) through
+      the windows for objects it needs. The non-I/O half is the linker
+      and serialisers themselves; bulk-serialising POD arrays (FColor is
+      read as four separate bytes, FMeshVert as one int) is the follow-up.
 
 ## Bigger, in order of expected payoff
 
@@ -178,17 +180,20 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       5710 seeks for ~5 MB of package data -- the loader visits objects on
       demand and jumps around the 37 MB UnrealI.u, so one 16 KB window
       thrashed, and every texel/sample/mesh byte was read only to be
-      dropped. Three changes (all emulator-verified, hardware pending):
-      files under `[PSP] LoadCacheMB` (2) are read whole while a load runs
-      (under a `LoadCacheHeapMB` 30 guard; the first version at 8 MB / 38
-      MB pushed the emulator into out-of-memory), four LRU read windows
-      per file during loads (one while playing), and the texture, sound
-      and mesh serialisers now Skip() past data they would drop instead
-      of reading it (FArchive::Skip, a seek in the file loader). Emulator
-      counts: DmRadikus 7764 reads / 38.6 MB -> 3775 reads / 16.7 MB;
-      Entry 6274 / 17 MB -> 1930 / 6.8 MB. The remaining seeks are the
-      objects themselves (UnrealI.u); `-REFILLKB` is still the lever to
-      A/B on hardware.
+      dropped. Three changes: files under `[PSP] LoadCacheMB` (2) are
+      read whole while a load runs (under a `LoadCacheHeapMB` 30 guard;
+      the first version at 8 MB / 38 MB pushed the emulator into
+      out-of-memory), sixteen LRU read windows per file during loads (one
+      while playing), and the texture, sound and mesh serialisers now
+      Skip() past data they would drop instead of reading it
+      (FArchive::Skip, a seek in the file loader). Emulator counts:
+      DmRadikus 7764 reads / 38.6 MB -> 3775 reads / 16.7 MB; Entry 6274
+      / 17 MB -> 1930 / 6.8 MB. On the card: Entry 19.6 s -> 7.3 s,
+      DmRadikus 28.5 s -> 15.1 s, four-bot match steady at 29 fps.
+      `-REFILLKB` A/B on the card (DmRadikus load): 1 KB 14.3 s, 2 KB
+      15.1, 4 KB 16.8, 8 KB 19.1, 16 KB 24.2 -- the stick time tracks
+      bytes moved, not read count, so the first refill after a seek is
+      now 1 KB (PSP_FILE_MINREFILL), doubling while reads stay sequential.
       Background: the 1998 engine leaned on the PC's virtual memory;
       retail patches later added TLazyArray for mips and sounds, which
       this source snapshot predates.
