@@ -59,8 +59,10 @@ cp "$HERE/Engine/Config/Default.ini" "$HERE/Engine/Config/Unreal.ini" "$DEST/Sys
 find "$DEST/System" \( -iname '*.dll' -o -iname '*.exe' \) -delete
 
 # Point the engine at the driver this build actually contains: the fixed
-# (Shiny surfaces render the scene twice through every mirror: off. Coronas
-# and high-detail actors stay on; the cost is small and the look matters.)
+# (Shiny surfaces render the scene twice through every mirror. Measured on the
+# card once the sound mixer left the CPU: the intro's torch hall drops from
+# 12.6 to 10.7 fps with them, nothing else changes -- on. Coronas and
+# high-detail actors stay on as well.)
 # pipeline GL driver rather than the GLES one. Audio now uses NOpenALDrv,
 # with reverb compiled out (PSP_NO_EFX), so it is left alone.
 # The "=" anchors matter: without them these also rewrite the [section] headers,
@@ -71,7 +73,7 @@ sed -i '' \
   -e 's|^ViewportX=.*|ViewportX=480|' \
   -e 's|^ViewportY=.*|ViewportY=272|' \
   -e 's|^StartupFullscreen=.*|StartupFullscreen=True|' \
-  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^ShinySurfaces=.*|ShinySurfaces=False|' \
+  -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^ShinySurfaces=.*|ShinySurfaces=True|' \
   -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^HighDetailActors=.*|HighDetailActors=True|' \
   -e '/^\[NOpenGLDrv.NOpenGLRenderDevice\]/,/^\[/ s|^Coronas=.*|Coronas=True|' \
   -e 's|^OutputRate=.*|OutputRate=22050|' \

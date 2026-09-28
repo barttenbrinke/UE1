@@ -386,6 +386,12 @@ UNOpenGLRenderDevice::UNOpenGLRenderDevice()
 UBOOL UNOpenGLRenderDevice::Init( UViewport* InViewport )
 {
 	guard(UNOpenGLRenderDevice::Init)
+#ifdef __PSP__
+	{
+		INT Shiny = ShinySurfaces ? 1 : 0;
+		if( Parse( appCmdLine(), "SHINY=", Shiny ) ) { ShinySurfaces = Shiny != 0; debugf( NAME_Log, "PSPPERF: ShinySurfaces forced %s", ShinySurfaces ? "on" : "off" ); }   // hardware A/B of mirror surfaces
+	}
+#endif
 
 	if( !gladLoadGLLoader( &SDL_GL_GetProcAddress ) )
 	{
