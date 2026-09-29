@@ -48,6 +48,26 @@ fragment the heap. See the comments at the top of `Source/NOpenALDrv/PspMix.h`,
 Saving works from the in-game menu (the save files go to `PSP/GAME/Unreal/Save/`). The game runs at
 333 MHz. Suspending the PSP mid-game with the power switch is untested.
 
+### Controls
+
+The PSP has one analog stick, so the layout follows the usual PSP shooter convention: the stick
+moves, the face buttons look, the triggers fire. Everything is an ordinary binding in the
+`[Engine.Input]` section of `System/Unreal.ini`, so it can be changed; `PSP-CONTROLS.txt` has the
+full list, the button numbering and an alternative layout.
+
+| | |
+|---|---|
+| Analog stick | move forward/back, strafe |
+| Triangle / Cross | look up / down |
+| Square / Circle | turn left / right |
+| R / L | fire / alt-fire |
+| D-pad up / down | jump / duck |
+| D-pad left / right | previous / next weapon |
+| Start | menu (also confirms in menus) |
+| Select | translator |
+| Select + D-pad up | use the selected inventory item |
+| Select + D-pad left / right | previous / next inventory item |
+
 ### Building for PSP
 
 1. Install the [pspdev toolchain](https://github.com/pspdev/pspdev) (a release archive or the
