@@ -74,7 +74,12 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
         probe must skip region pointers (that hung the first attempt).
       Result: DmRadikus -> NyLeve -> Dig -> Chizra -> SkyTown -> ... three
       laps in the emulator, heap arena never above 29 MB (+ up to 10 MB in
-      the region). Hardware not yet run with this build.
+      the region). On the card (2026-09-29): the collapse replay fell into
+      Vortex Rikers' exit and NyLeve loaded in 26 s with the release step
+      (this was "loading the second level was not working"); loading a
+      save from inside a running level now releases the level first
+      (PspReleaseLevel, used by the map and the save branches) -- that was
+      "loading a save game was not working".
 - [ ] Render A/B tooling (2026-09-28 evening), and why it did not settle
       the light-cache question: -SHOTAT=secs -SHOTNAME=label writes
       System/shot-<label>.ppm from the displayed framebuffer
