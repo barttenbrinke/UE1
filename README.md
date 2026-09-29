@@ -9,8 +9,75 @@ Requires assets from the original Unreal v200 retail release or from the v205 de
 * Added GLES2 and fixed pipeline GL graphics drivers (NOpenGLESDrv and NOpenGLDrv).
 * Added OpenAL + libxmp audio driver (NOpenALDrv).
 * Added GCC support and fixed a bunch of related bugs.
-* Supported platforms: Windows (x86), Linux (x86, ARM32) and PSVita (ARM32).
+* Supported platforms: Windows (x86), Linux (x86, ARM32), PSVita (ARM32) and **PSP** (MIPS, this fork).
 * Editor UI is not supported.
+
+## PSP port
+
+This fork adds a port to the Sony PSP. It runs the full single-player game on a PSP-2000 or later
+(64 MB of RAM is required; the PSP-1000's 32 MB is not enough) with custom firmware that can run
+homebrew EBOOTs (PRO, ME, ARK). It is a work in progress: the first levels are playable at roughly
+20-30 fps, level loads take 8-20 seconds from the Memory Stick, and `PSP-TODO.md` is the running
+engineering log of what was done and what is still open. Controls are described in
+`PSP-CONTROLS.txt`.
+
+What the port does differently from the other platforms, in short: textures, sounds and mesh data
+are streamed from the Memory Stick on first use instead of being kept in memory; sound effects are
+mixed by the PSP's second CPU, the Media Engine, which also plays the tracker music; BSP lighting is
+folded into vertex colours; large allocations live in their own region so level changes do not
+fragment the heap. See the comments at the top of `Source/NOpenALDrv/PspMix.h`,
+`Source/Core/Src/UnFile.cpp` and `Source/NOpenGLDrv/NOpenGLDrv.cpp` for the details.
+
+### Running on a PSP
+
+1. You need the game data from the original Unreal v200 retail release (the CD, or an installed
+   copy). Copy its `System`, `Maps`, `Textures`, `Sounds` and `Music` folders into `GAME_ASSETS/`
+   next to this README. That is about 370 MB. `GAME_ASSETS/` is ignored by git; never commit it.
+2. Build the EBOOT (below) or take `EBOOT.PBP` from a release.
+3. Assemble the install. With the Memory Stick mounted:
+   ```
+   ./install-psp.sh /Volumes/<your stick>/PSP/GAME
+   ```
+   This creates `PSP/GAME/Unreal/` with the EBOOT, the game data, the port's configuration files
+   and the PSP-specific settings appended to `System/Unreal.ini`. The same command with
+   `~/.config/ppsspp/PSP/GAME` (or wherever your emulator keeps its games) makes a PPSSPP install;
+   set `MusicME=0` in the `[PSP]` section of that copy's `System/Unreal.ini`, because the emulator
+   has no Media Engine and the game would hang at the first song.
+4. On the PSP, launch **Unreal** from the Game menu of the XMB.
+
+Saving works from the in-game menu (the save files go to `PSP/GAME/Unreal/Save/`). The game runs at
+333 MHz. Suspending the PSP mid-game with the power switch is untested.
+
+### Building for PSP
+
+1. Install the [pspdev toolchain](https://github.com/pspdev/pspdev) (a release archive or the
+   build script), set `PSPDEV` to its location and put `$PSPDEV/bin` on your `PATH`. The toolchain
+   must provide SDL2, pspgl (`libGL`/`libGLU`) and libxmp for the PSP; the all-in-one releases do,
+   otherwise install them with `psp-pacman` (`sdl2`, `pspgl`, `libxmp`). OpenAL is **not** needed:
+   the PSP build has its own mixer behind a thin OpenAL-compatible shim.
+2. Install the Media Engine core library, which lets the game run code on the PSP's second CPU:
+   [`psp-media-engine-custom-core`](https://github.com/mcidclan/psp-media-engine-custom-core) by
+   mcidclan. `make clean; make install` in its checkout puts `libme-core.a` and
+   `<me-core-mapper/me-core.h>` into `$PSPDEV`. On macOS its build needs GNU sed
+   (`brew install gnu-sed`); after a failed build, clean before retrying, or a stale embedded
+   object survives.
+3. Build:
+   ```
+   ./build-psp.sh              # build-psp/Unreal/EBOOT.PBP
+   ./build-psp.sh --psplink    # additionally build-psplink/Unreal/Unreal.prx, for debugging over PSPLink
+   ```
+   The script runs CMake with the options the port expects (no editor, no networking, the fixed
+   pipeline GL driver, one PRX). To configure by hand instead, read the `COMMON` list in the script.
+4. Install with `./install-psp.sh` as above.
+
+### Debugging on the console
+
+The PSPLink build mirrors the log to `pspsh` and keeps the engine's cycle counters, so every frame
+can be broken down on the hardware. `tools/psp/README.md` describes the scripts used for that:
+running the PRX from the host over USB, pushing a build to the card, pulling a save game off it to
+replay a problem, and the command-line switches that replay a save and walk forward, checksum the
+frame, or quit on a timer. The emulator is good for logic and memory but not for speed: it is several
+times faster than a PSP and capped at 20 fps here.
 
 ## Running
 
