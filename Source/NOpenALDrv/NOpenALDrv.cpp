@@ -1421,12 +1421,22 @@ void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
 #ifdef __PSP__
 	{
 		static INT Frames = 0;
-		if( ++Frames % 300 == 0 )
+		if( ++Frames % 150 == 0 )
 		{
 			INT Playing = 0;
 			for( INT i = 0; i < NumSources; ++i ) { ALint St = 0; alGetSourcei( Sources[i], AL_SOURCE_STATE, &St ); if( St == AL_PLAYING ) ++Playing; }
 			debugf( NAME_Log, "PSPSND: resident %d KB in %d sounds (budget %d KB, %d evicted); %d of %d voices playing; mixer %s, %u blocks, %u underruns", GPspSndResident / 1024, GPspSndRecs.Num(), PspSndBudgetKB(), GPspSndEvicted, Playing, NumSources,
 				GPspMix ? ( GPspMix->Enable ? "on the ME" : "on the CPU" ) : "none", GPspMix ? (unsigned)GPspMix->Read : 0u, GPspMix ? (unsigned)GPspMix->Underruns : 0u );
+			// -SNDLOG: what each playing voice is (looping sounds that never stop)
+			if( PspSndLog() )
+				for( INT i = 0; i < NumSources; ++i )
+				{
+					ALint St = 0; alGetSourcei( Sources[i], AL_SOURCE_STATE, &St );
+					if( St != AL_PLAYING || !Voices[i].Sound ) continue;
+					const FLOAT Dist = Viewport && Viewport->Actor ? FDist( Viewport->Actor->Location, Voices[i].Location ) : -1.f;
+					debugf( NAME_Log, "PSPSND:   voice %2d %-24s actor %-20s slot %2d looping %d vol %.2f radius %.0f dist %.0f", i, Voices[i].Sound->GetName(),
+						Voices[i].Actor ? Voices[i].Actor->GetClass()->GetName() : "(none)", ( Voices[i].Id & 14 ) / 2, (INT)Voices[i].Looping, Voices[i].Volume, Voices[i].Radius, Dist );
+				}
 		}
 	}
 #endif

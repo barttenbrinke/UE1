@@ -430,6 +430,9 @@ void MainLoop( UEngine* Engine )
 				appSleep( Delta );
 		}
 	}
+#ifdef __PSP__
+	GPspExiting = 1;   // teardown below freed garbage and crashed on the way out; the kernel reclaims the process anyway
+#endif
 	GIsRunning = 0;
 	unguard;
 }

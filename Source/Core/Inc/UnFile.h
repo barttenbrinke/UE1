@@ -408,6 +408,7 @@ CORE_API void appPspStickReport( char* Out, INT Max );   // top files by stick b
 CORE_API void appPspLoadCacheBegin();
 CORE_API void appPspLoadCacheEnd( INT& Files, INT& KB );
 CORE_API void appPspDumpBigBlocks( INT Top );
+CORE_API extern UBOOL GPspExiting;   // main loop ended; appFree is a no-op from here
 CORE_API extern FLOAT GPspAutoWalkLeft;  // -AUTOWALK: seconds of full-forward stick still to inject (NSDLDrv reads, Engine counts down)
 CORE_API extern INT GPspMeshReloadKB;   // mesh render data brought back by UMesh::GetFrame (never re-freed yet)
 // Non-zero while appReloadObject() re-serialises an object: loaders that

@@ -345,7 +345,10 @@ static void PspBigAdd( void* Ptr, INT Size, const char* Tag )
 }
 static void PspBigRemove( void* Ptr )
 {
-	if( !Ptr || !GPspBigNum || ( !PspInBigRegion( Ptr ) && malloc_usable_size( Ptr ) < PSP_BIG_MIN ) ) return;   // usable_size is undefined for region blocks
+	// No size probe: malloc_usable_size on a pointer that is not a live heap
+	// block reads its "header" and took a bus error at shutdown. The table
+	// holds a few dozen entries; scanning it is cheaper than the risk.
+	if( !Ptr || !GPspBigNum ) return;
 	PspBigLock();
 	for( INT i = 0; i < GPspBigNum; ++i )
 		if( GPspBig[i].Ptr == Ptr ) { GPspBig[i] = GPspBig[--GPspBigNum]; break; }
@@ -499,15 +502,37 @@ CORE_API void* appMalloc( INT Size, const char* Tag )
 	return Ptr;
 	unguard;
 }
+#ifdef __PSP__
+static inline UBOOL PspPointerPlausible( const void* Ptr )
+{
+	const u32 A = (u32)Ptr;
+	return ( A >= 0x08800000u && A < 0x0C000000u ) || ( A >= 0x48800000u && A < 0x4C000000u );   // user partition, cached or uncached alias
+}
+#endif
+CORE_API UBOOL GPspExiting = 0;   // set when the main loop has ended: frees are pointless (the kernel reclaims the process) and teardown handed us garbage
 CORE_API void appFree( void* Ptr )
 {
 	guard(appFree);
 	check(Ptr);
+#ifdef __PSP__
+	if( GPspExiting )
+		return;
+#endif
 
 #if CHECK_ALLOCS
 	DeleteTrackedAllocation( Ptr );
 #endif
 #ifdef __PSP__
+	// Shutdown freed a pointer far outside RAM (0x1392AA60) and the block
+	// tracker's size probe took a bus error before free() could. Refuse
+	// anything outside the user partition and say who asked.
+	if( !PspPointerPlausible( Ptr ) )
+	{
+		static INT Logged = 0;
+		if( Logged++ < 8 )
+			debugf( NAME_Warning, "appFree: ignoring pointer %p outside memory, called from %p", Ptr, __builtin_return_address( 0 ) );
+		return;
+	}
 	PspBigRemove( Ptr );
 	if( PspInBigRegion( Ptr ) ) { PspBigRegionFree( Ptr ); return; }
 #endif
@@ -558,6 +583,15 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 	if( Ptr && NewSize == 0 )
 	{
 #ifdef __PSP__
+		if( GPspExiting )
+			return NULL;
+		if( !PspPointerPlausible( Ptr ) )
+		{
+			static INT Logged = 0;
+			if( Logged++ < 8 )
+				debugf( NAME_Warning, "appRealloc(0): ignoring pointer %p outside memory (%s), called from %p", Ptr, Tag ? Tag : "?", __builtin_return_address( 0 ) );
+			return NULL;
+		}
 		PspBigRemove( Ptr );
 		if( PspInBigRegion( Ptr ) ) { PspBigRegionFree( Ptr ); return NULL; }
 #endif
@@ -568,6 +602,13 @@ CORE_API void* appRealloc( void* Ptr, INT NewSize, const char* Tag )
 #ifdef __PSP__
 	{
 		PspLowMemoryCheck( NewSize );
+		if( Ptr && !PspPointerPlausible( Ptr ) )
+		{
+			static INT Logged = 0;
+			if( Logged++ < 8 )
+				debugf( NAME_Warning, "appRealloc: pointer %p outside memory (%s), called from %p; allocating fresh", Ptr, Tag ? Tag : "?", __builtin_return_address( 0 ) );
+			Ptr = NULL;
+		}
 		PspBigRemove( Ptr );
 		void* Result = NULL;
 		if( Ptr && PspInBigRegion( Ptr ) )

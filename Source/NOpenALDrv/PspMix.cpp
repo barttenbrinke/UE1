@@ -31,9 +31,10 @@ void PspMixBlock( FPspMixShared* Mix, short* Out, int* Acc )
 	for( int v = 0; v < PSP_MIX_VOICES; ++v )
 	{
 		FPspMixVoice& V = Mix->Voices[v];
-		u32 Flags = V.Flags;
-		if( !( Flags & PSP_MIXF_PLAYING ) || ( Flags & PSP_MIXF_PAUSED ) || !V.Data || !V.Frames )
+		const u32 Flags = V.Flags;
+		if( !( Flags & PSP_MIXF_PLAYING ) || ( Flags & PSP_MIXF_PAUSED ) || V.Ended || !V.Data || !V.Frames )
 			continue;
+		u32 Fmt    = V.CurFmt;
 		u32 Data   = V.Data;
 		u32 Frames = V.Frames;
 		u32 Pos    = V.Pos;
@@ -54,22 +55,22 @@ void PspMixBlock( FPspMixShared* Mix, short* Out, int* Acc )
 				if( V.NextData )
 				{
 					// Streaming: the next buffer follows without a gap.
-					Data = V.NextData; Frames = V.NextFrames; Flags = ( Flags & ~( PSP_MIXF_16BIT | PSP_MIXF_STEREO ) ) | ( V.NextFlags & ( PSP_MIXF_16BIT | PSP_MIXF_STEREO ) );
-					V.Data = Data; V.Frames = Frames; V.Flags = Flags; V.NextData = 0;
+					Data = V.NextData; Frames = V.NextFrames; Fmt = V.NextFlags & ( PSP_MIXF_16BIT | PSP_MIXF_STEREO );
+					V.Data = Data; V.Frames = Frames; V.CurFmt = Fmt; V.NextData = 0;
 					V.Done = V.Done + 1;
 					Pos -= Idx << 16;
 					continue;
 				}
-				Flags &= ~PSP_MIXF_PLAYING;
+				V.Ended = 1;
 				V.Done = V.Done + 1;
 				break;
 			}
 			const u32 Idx1 = ( Idx + 1 < Frames ) ? Idx + 1 : Idx;
 			const int Frac = (int)( ( Pos >> 8 ) & 0xff );
 			int L, R;
-			if( Flags & PSP_MIXF_STEREO )
+			if( Fmt & PSP_MIXF_STEREO )
 			{
-				if( Flags & PSP_MIXF_16BIT )
+				if( Fmt & PSP_MIXF_16BIT )
 				{
 					const short* S = (const short*)Data;
 					const int L0 = S[Idx*2], L1 = S[Idx1*2], R0 = S[Idx*2+1], R1 = S[Idx1*2+1];
@@ -88,7 +89,7 @@ void PspMixBlock( FPspMixShared* Mix, short* Out, int* Acc )
 			else
 			{
 				int S0, S1;
-				if( Flags & PSP_MIXF_16BIT )
+				if( Fmt & PSP_MIXF_16BIT )
 				{
 					const short* S = (const short*)Data;
 					S0 = S[Idx]; S1 = S[Idx1];
@@ -105,8 +106,7 @@ void PspMixBlock( FPspMixShared* Mix, short* Out, int* Acc )
 			Pos += Step;
 			++i;
 		}
-		V.Pos   = Pos;
-		V.Flags = Flags;
+		V.Pos = Pos;   // never Flags: see the ownership note in PspMix.h
 	}
 	for( int i = 0; i < PSP_MIX_FRAMES * 2; ++i )
 	{

@@ -109,7 +109,7 @@ static void PspALStart( ALuint Id, ALuint BufId )
 	if( !S || !V || !B )
 		return;
 	V->Flags = 0;
-	V->Data = B->Uncached; V->Frames = B->Frames; V->Pos = 0; V->NextData = 0;
+	V->Data = B->Uncached; V->Frames = B->Frames; V->Pos = 0; V->NextData = 0; V->CurFmt = B->Flags; V->Ended = 0;
 	PspALCommit( Id );
 	V->Flags = PSP_MIXF_PLAYING | B->Flags | ( S->Looping ? PSP_MIXF_LOOP : 0 );
 	S->Started = 1;
@@ -127,7 +127,7 @@ static void PspALService( ALuint Id )
 		++S->Processed;
 	}
 	// The mixer plays Queue[Processed]; offer Queue[Processed+1] as Next.
-	if( ( V->Flags & PSP_MIXF_PLAYING ) && !V->NextData && S->Processed + 1 < S->QNum )
+	if( ( V->Flags & PSP_MIXF_PLAYING ) && !V->Ended && !V->NextData && S->Processed + 1 < S->QNum )
 	{
 		FPspALBuffer* N = Buf( S->Queue[S->Processed + 1] );
 		if( N ) { V->NextFrames = N->Frames; V->NextFlags = N->Flags; V->NextData = N->Uncached; }
@@ -344,7 +344,7 @@ void AL_APIENTRY alGetSourcei( ALuint Id, ALenum Param, ALint* Value )
 	{
 		case AL_SOURCE_STATE:
 			PspALService( Id );
-			if( V->Flags & PSP_MIXF_PLAYING ) *Value = ( V->Flags & PSP_MIXF_PAUSED ) ? AL_PAUSED : AL_PLAYING;
+			if( ( V->Flags & PSP_MIXF_PLAYING ) && !V->Ended ) *Value = ( V->Flags & PSP_MIXF_PAUSED ) ? AL_PAUSED : AL_PLAYING;
 			else *Value = S->Started ? AL_STOPPED : AL_INITIAL;
 			break;
 		case AL_BUFFER:            *Value = (ALint)( S->QNum ? S->Queue[0] : S->Buffer ); break;
@@ -358,7 +358,7 @@ void AL_APIENTRY alGetSourcei( ALuint Id, ALenum Param, ALint* Value )
 void AL_APIENTRY alSourcePlay( ALuint Id )
 {
 	FPspALSource* S = Src( Id ); FPspMixVoice* V = Voice( Id ); if( !S || !V ) return;
-	if( V->Flags & PSP_MIXF_PAUSED ) { V->Flags = V->Flags & ~PSP_MIXF_PAUSED; return; }
+	if( ( V->Flags & PSP_MIXF_PAUSED ) && !V->Ended ) { V->Flags = V->Flags & ~PSP_MIXF_PAUSED; return; }
 	if( S->QNum )
 	{
 		// Streaming: (re)start from the first unprocessed buffer.
@@ -383,7 +383,7 @@ void AL_APIENTRY alSourceStopv( ALsizei N, const ALuint* Ids ) { for( ALsizei k 
 void AL_APIENTRY alSourcePause( ALuint Id )
 {
 	FPspMixVoice* V = Voice( Id ); if( !Src( Id ) || !V ) return;
-	if( V->Flags & PSP_MIXF_PLAYING ) V->Flags = V->Flags | PSP_MIXF_PAUSED;
+	if( ( V->Flags & PSP_MIXF_PLAYING ) && !V->Ended ) V->Flags = V->Flags | PSP_MIXF_PAUSED;
 }
 void AL_APIENTRY alSourceQueueBuffers( ALuint Id, ALsizei N, const ALuint* Ids )
 {

@@ -95,6 +95,24 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
       flat ground (or a frozen camera). -MESHLIGHTCACHE=0/1, -MESHGUARD=pct
       remain for a by-eye A/B on the card. Screen captures of the emulator
       window do not work from this session (System Events not authorised).
+- [x] Sounds that never stopped (2026-09-29, "humans shouting in a
+      cutscene"): the mixer wrote a voice's whole Flags word back after
+      each block, so a stop the CPU issued in that window was lost and a
+      looping voice kept playing with no engine record of it (the
+      -SNDLOG voice dump at the save showed only legitimate ambients).
+      Ownership is now strict: the CPU owns Flags; the mixer reports the
+      end of a sample through Ended and keeps the current format in CurFmt
+      (PspMix.h). Fix is structural, not yet confirmed by ear.
+- [x] Crash on exit (2026-09-29): teardown after "Game engine shut down"
+      freed a pointer made of two heap addresses added together, and the
+      block tracker's malloc_usable_size probe took a bus error on it.
+      The probe is gone (the table is scanned instead) and once the main
+      loop has ended appFree/appRealloc(0) are no-ops (GPspExiting): the
+      kernel reclaims the process. -EXITAT=secs reproduces an exit; the
+      run now ends with "appExit" and a closed log. Who frees the garbage
+      is still unknown (it did not reach appFree/appRealloc through the
+      plausibility guards, so it comes from a path that calls the tracker
+      directly -- worth a look if it ever matters in play).
 - [ ] Vortex Rikers collapsing-floor sequence (save slot 0, 2026-09-28),
       replayed on the card with `-LOAD=0 -WALKDELAY=15 -AUTOWALK=12`.
       What happens: the trigger tilts the floor, an Earthquake actor

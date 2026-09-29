@@ -51,8 +51,15 @@ struct FPspMixVoice
 	volatile u32 NextData;    // queued follow-on buffer (streaming), 0 = none
 	volatile u32 NextFrames;
 	volatile u32 NextFlags;   // format bits for Next
-	volatile u32 Pad;
+	volatile u32 Ended;       // mixer -> CPU: the sample ran out (non-looping, nothing queued); cleared by the CPU on (re)start
+	volatile u32 CurFmt;      // format bits of the buffer being mixed: set by the CPU at start, by the mixer on a Next swap
 };
+// Ownership: the CPU writes Flags, Step, GainL/R, Data/Frames/Next* and clears
+// Ended when it starts a voice; the mixer writes Pos, Done, Ended and, on a
+// streaming swap, Data/Frames/NextData/CurFmt. The mixer never writes Flags:
+// the first version wrote the whole word back after each block and a stop
+// issued by the CPU in that window was lost, leaving a looping voice that
+// nobody owned any more (the shouts that never ended).
 
 struct FPspMixShared
 {

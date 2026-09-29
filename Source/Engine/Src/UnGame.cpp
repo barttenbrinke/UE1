@@ -1453,6 +1453,12 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 			if( GPspAutoWalkLeft <= 0.f ) debugf( NAME_Log, "PSPTEST: autowalk finished" );
 		}
 	}
+	// -EXITAT=secs: quit the game then (the card build crashed on exit).
+	{
+		static INT ExitAt = -2;
+		if( ExitAt == -2 ) { ExitAt = -1; INT At = 0; if( Parse( appCmdLine(), "EXITAT=", At ) && At > 0 ) ExitAt = At; }
+		if( ExitAt > 0 && appSeconds() >= (DOUBLE)ExitAt ) { ExitAt = 0; debugf( NAME_Log, "PSPTEST: EXIT" ); Exec( "EXIT", GSystem ); }
+	}
 	// -SAVETEST=secs (test hook): save to slot 9 after N seconds in a map,
 	// load it back at 2N. Exercises the menu's SaveGame / ?load= paths.
 	{
