@@ -412,3 +412,12 @@ meshes 9-12 (driver vertex building 4-5, lighting 1.5, keyframe lerp 0.1).
   hardware palettes, facet/mesh batching, mapped pspgl VBO vertex ring,
   pre-rendered music on a hardware channel, adaptive file window,
   lightmap vertex lighting, gamma/light curve, texture budget/eviction.
+- Game data without the 1998 CD (2026-09-29): Unreal Gold's Maps, Textures,
+  Sounds and Music are byte-identical to v200's; its System/*.u are file
+  version 68 (v226) and the v61 linker rejects them (garbage array size in
+  ULinkerLoad). The 1998 Unreal Special Edition demo (Sound Blaster Live!
+  bundle, archive.org) ships Core.u, Engine.u, Fire.u and UnrealI.u that
+  are byte-identical to v200's, and .int files that are supersets.
+  fetch-assets.sh combines the two; Harobed (not in the demo) loads and runs
+  on that set in PPSSPP. The launcher now takes the game folder from its own
+  path (argv[0]), so PSP/GAME/<anything>/ works and two installs can coexist.

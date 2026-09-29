@@ -19,4 +19,5 @@ build-psp-gprof/
 build-psplink-os/
 UNREAL_GOLD.ISO
 .iso-unpack.*/
-GAME_ASSETS_GOLD/
+GAME_ASSETS_*/
+UnrealSpecialEdition.7z

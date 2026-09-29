@@ -31,6 +31,7 @@ cp "$EBOOT" "$DEST/EBOOT.PBP"
 for d in System Maps Textures Sounds Music; do
   echo "    $d"
   rsync -rt --delete --exclude '._*' --exclude '.DS_Store' "$ASSETS/$d/" "$DEST/$d/"
+  chmod -R u+w "$DEST/$d"   # disc images and demo archives unpack read-only
 done
 
 # Music: the tracker mixer is CPU the PSP does not have, so every .umx is
@@ -154,7 +155,11 @@ sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^CurvedSurfaces=.*|CurvedSurfaces=F
 # macOS writes a 4KB "._name" AppleDouble beside every file written to a
 # FAT/exFAT volume, and the PSP lists those as "Corrupted Data". rsync creates
 # them too, not just Finder, so clean up whenever we wrote to a real card.
-if df -P "$DEST" | awk 'NR==2 {exit !($1 ~ /^\/dev\/disk/)}'; then
+# Only on a FAT/exFAT volume (a card): on the system volume the home folder
+# sits on a /dev/disk mount that is not "/", and dot_clean would crawl all
+# of it.
+DEV=$(df -P "$DEST" | awk 'NR==2 {print $1}')
+if mount | grep -qE "^$DEV on .* \((msdos|exfat)"; then
   VOL=$(df -P "$DEST" | awk 'NR==2 {print $6}')
   if [ "$VOL" != "/" ]; then
     echo "==> removing macOS sidecars from $VOL"

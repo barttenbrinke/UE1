@@ -187,6 +187,27 @@ extern "C" { int sce_newlib_heap_kb_size = -1024; }
 #include <pspthreadman.h>
 static char GRootPath[MAX_PATH] = "ms0:/" SYSTEM_PATH;
 
+//
+// The game data lives beside the EBOOT: argv[0] is its full path
+// ("ms0:/PSP/GAME/<folder>/EBOOT.PBP", or "ef0:/..." on a PSP go), so the
+// folder can be called anything and two installs can sit side by side.
+// A PSPLink run comes in as "host0:/Unreal.prx" and keeps the default,
+// which is where the data stays on the card during development.
+//
+static void PspRootFromLauncher( const char* Launcher )
+{
+	if( !Launcher || ( strncmp( Launcher, "ms0:/", 5 ) && strncmp( Launcher, "ef0:/", 5 ) ) )
+		return;
+	const char* Slash = strrchr( Launcher, '/' );
+	if( !Slash )
+		return;
+	const size_t DirLen = (size_t)( Slash + 1 - Launcher );
+	if( DirLen + sizeof("System/") > sizeof(GRootPath) )
+		return;
+	memcpy( GRootPath, Launcher, DirLen );
+	strcpy( GRootPath + DirLen, "System/" );
+}
+
 // NOTE: a pspDebugInstallErrorHandler() crash handler was tried here and does
 // NOT work. It pulls in sceKernelRegisterDefaultExceptionHandler and
 // sceKernelRegisterSubIntrHandler, which are kernel-mode only, and a user-mode
@@ -472,6 +493,10 @@ int main( int argc, const char** argv )
 	hInstance = NULL;
 	// Remember arguments since we don't have GetCommandLine().
 	appSetCmdLine( argc, (const char**)argv );
+#ifdef __PSP__
+	if( argc > 0 )
+		PspRootFromLauncher( argv[0] );
+#endif
 	PlatformPreInit();
 #endif
 

@@ -1,7 +1,7 @@
 ## What?
 
 Unreal Engine 1 v200 source with modifications to make it run on modern systems.  
-Requires assets from the original Unreal v200 retail release or from the v205 demo. Other versions have not been tested.
+Requires assets from the original Unreal v200 retail release or from the v205 demo. Other versions have not been tested. For the PSP port, `fetch-assets.sh` assembles a compatible set from freely downloadable archives (see below).
 
 ## Changes from original source
 
@@ -30,16 +30,29 @@ fragment the heap. See the comments at the top of `Source/NOpenALDrv/PspMix.h`,
 
 ### Running on a PSP
 
-1. You need the game data from the original Unreal v200 retail release (the CD, or an installed
-   copy). Copy its `System`, `Maps`, `Textures`, `Sounds` and `Music` folders into `GAME_ASSETS/`
-   next to this README. That is about 370 MB. `GAME_ASSETS/` is ignored by git; never commit it.
+1. Get the game data into `GAME_ASSETS/` next to this README. Either:
+   - run `./fetch-assets.sh`. It downloads two freely available archives, checks them against known
+     checksums and unpacks the right folders: the maps, textures, sounds and music come from the
+     Unreal Gold disc image that OldUnreal hosts with Epic Games' permission (you are asked to accept
+     the Epic Games Terms of Service, as their installer does), and the code packages in `System/`
+     come from the 1998 *Unreal Special Edition* demo preserved on archive.org. Both parts are
+     byte-identical to the original v200 release, which is what this engine was built from. Unreal
+     Gold's own `System/*.u` are the later v226 code and cannot be loaded by this engine, so they
+     are not used. About 780 MB is downloaded and 600 MB kept.
+   - or, if you own the original 1998 CD, copy its `System`, `Maps`, `Textures`, `Sounds` and
+     `Music` folders into `GAME_ASSETS/` yourself (about 370 MB).
+
+   `GAME_ASSETS/` is ignored by git; never commit it.
 2. Build the EBOOT (below) or take `EBOOT.PBP` from a release.
 3. Assemble the install. With the Memory Stick mounted:
    ```
    ./install-psp.sh /Volumes/<your stick>/PSP/GAME
    ```
    This creates `PSP/GAME/Unreal/` with the EBOOT, the game data, the port's configuration files
-   and the PSP-specific settings appended to `System/Unreal.ini`. The same command with
+   and the PSP-specific settings appended to `System/Unreal.ini`. The folder may be renamed or moved
+   afterwards (the game finds its data next to the EBOOT); `UNREAL_DIRNAME=<name>` installs under
+   another name from the start, and `UNREAL_ASSETS=<dir>` takes the data from another folder, so two
+   data sets can sit side by side. The same command with
    `~/.config/ppsspp/PSP/GAME` (or wherever your emulator keeps its games) makes a PPSSPP install;
    set `MusicME=0` in the `[PSP]` section of that copy's `System/Unreal.ini`, because the emulator
    has no Media Engine and the game would hang at the first song.
