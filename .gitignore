@@ -17,3 +17,6 @@ build-psp-prof/
 build-psp-o3/
 build-psp-gprof/
 build-psplink-os/
+UNREAL_GOLD.ISO
+.iso-unpack.*/
+GAME_ASSETS_GOLD/
