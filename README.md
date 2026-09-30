@@ -1,4 +1,4 @@
-# Unreal (1998) for the Sony PSP
+# Unreal (1998) on the PSP
 
 A port of the original *Unreal* to the PSP-2000 and later models. The full single-player campaign
 and the deathmatch maps of the 1998 game run on the console from a homebrew EBOOT, using the game's
@@ -9,51 +9,7 @@ The port is playable but still a work in progress. The point of putting it on Gi
 it played: the first levels have been tested on hardware many times, the rest of the campaign and
 the deathmatch maps far less. If you have a PSP, please play and report back; the section
 [Help testing](#help-testing) says how, and a save game attached to an issue is the most useful
-thing you can send.
-
-## What it does
-
-The engine is the 1998 code, compiled for the PSP's MIPS CPU, with the parts rewritten that the
-console could not carry:
-
-* **Streaming instead of resident data.** Textures, sounds and mesh geometry are read from the
-  Memory Stick on first use and dropped again under memory pressure. A level that took 60 MB on a
-  PC fits in the 40 MB the PSP-2000 leaves to a game.
-* **Sound on the second CPU.** Sound effects are mixed and the tracker music is played on the
-  Media Engine, the PSP's second MIPS core, through mcidclan's me-core library. The game CPU only
-  hands over the voices.
-* **Lighting folded into vertex colours.** The BSP lightmaps are baked into the geometry pass, one
-  draw instead of two, with a gamma curve tuned for the PSP's LCD.
-* **A fixed region for large allocations** so that level changes do not fragment the heap, and a
-  loader tuned for the Memory Stick's slow seeks.
-
-`PSP-TODO.md` is the engineering log of what was measured and changed, in detail, and the comments
-at the top of `Source/NOpenALDrv/PspMix.h`, `Source/Core/Src/UnFile.cpp` and
-`Source/NOpenGLDrv/NOpenGLDrv.cpp` explain the three big pieces.
-
-## What works, and what is known not to
-
-Confirmed on a PSP-2000 with custom firmware:
-
-* The intro flyby, the Vortex Rikers and the following levels load and play; the first level has
-  been completed on the console and the second loads after it.
-* Saving from the menu and loading a save, including from inside a running level.
-* Sound effects, music, the translator, weapons, inventory.
-* Frame rate of about 20 to 30 fps in the early levels, dropping to 11 to 13 fps in the heaviest
-  castle views. Level loads take 8 to 20 seconds from the Memory Stick.
-* Clean exit to the XMB from the menu.
-
-Known limits and open questions:
-
-* **Later levels were only swept in the emulator** for memory use, not played on hardware.
-* **Deathmatch runs** (bots included) and has been used for performance testing, but has hardly
-  been played.
-* **Suspending the PSP mid-game** with the power switch, and hub levels with several saves, are
-  untested.
-* **Scripted sequences with many actors** (the collapsing floor in Vortex Rikers, for example) still
-  dip in frame rate, though far less than they did.
-* The PSP-1000 with 32 MB of RAM is **not** supported; the game does not fit.
-* Music volume against effects volume has not been balanced yet.
+thing you can send. [What it does](#what-it-does) explains what was changed to make the game fit.
 
 ## Getting it running
 
@@ -145,6 +101,30 @@ layout can be changed with a text editor. `PSP-CONTROLS.txt` has the button numb
 look speeds, and a reverse layout where the face buttons move and the stick looks, for those who
 prefer it.
 
+## What works, and what is known not to
+
+Confirmed on a PSP-2000 with custom firmware:
+
+* The intro flyby, the Vortex Rikers and the following levels load and play; the first level has
+  been completed on the console and the second loads after it.
+* Saving from the menu and loading a save, including from inside a running level.
+* Sound effects, music, the translator, weapons, inventory.
+* Frame rate of about 20 to 30 fps in the early levels, dropping to 11 to 13 fps in the heaviest
+  castle views. Level loads take 8 to 20 seconds from the Memory Stick.
+* Clean exit to the XMB from the menu.
+
+Known limits and open questions:
+
+* **Later levels were only swept in the emulator** for memory use, not played on hardware.
+* **Deathmatch runs** (bots included) and has been used for performance testing, but has hardly
+  been played.
+* **Suspending the PSP mid-game** with the power switch, and hub levels with several saves, are
+  untested.
+* **Scripted sequences with many actors** (the collapsing floor in Vortex Rikers, for example) still
+  dip in frame rate, though far less than they did.
+* The PSP-1000 with 32 MB of RAM is **not** supported; the game does not fit.
+* Music volume against effects volume has not been balanced yet.
+
 ## Help testing
 
 Two things need players more than they need programmers right now:
@@ -170,6 +150,26 @@ When you hit a problem, open an issue with:
 
 Performance observations without a crash are welcome too: the level and spot, and roughly what the
 game did (slideshow, hitching, fine).
+
+## What it does
+
+The engine is the 1998 code, compiled for the PSP's MIPS CPU, with the parts rewritten that the
+console could not carry:
+
+* **Streaming instead of resident data.** Textures, sounds and mesh geometry are read from the
+  Memory Stick on first use and dropped again under memory pressure. A level that took 60 MB on a
+  PC fits in the 40 MB the PSP-2000 leaves to a game.
+* **Sound on the second CPU.** Sound effects are mixed and the tracker music is played on the
+  Media Engine, the PSP's second MIPS core, through mcidclan's me-core library. The game CPU only
+  hands over the voices.
+* **Lighting folded into vertex colours.** The BSP lightmaps are baked into the geometry pass, one
+  draw instead of two, with a gamma curve tuned for the PSP's LCD.
+* **A fixed region for large allocations** so that level changes do not fragment the heap, and a
+  loader tuned for the Memory Stick's slow seeks.
+
+`PSP-TODO.md` is the engineering log of what was measured and changed, in detail, and the comments
+at the top of `Source/NOpenALDrv/PspMix.h`, `Source/Core/Src/UnFile.cpp` and
+`Source/NOpenGLDrv/NOpenGLDrv.cpp` explain the three big pieces.
 
 ## Building
 
