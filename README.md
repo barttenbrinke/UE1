@@ -3,6 +3,16 @@
 Unreal Engine 1 v200 source with modifications to make it run on modern systems.  
 Requires assets from the original Unreal v200 retail release or from the v205 demo. Other versions have not been tested. For the PSP port, `fetch-assets.sh` assembles a compatible set from freely downloadable archives (see below).
 
+## Related projects
+
+* [fgsfdsfgs/UE1](https://github.com/fgsfdsfgs/UE1) is the upstream of this fork: the SDL2, OpenGL
+  and OpenAL drivers, GCC support and the Windows, Linux and **PSVita** ports (by fgsfds, BSzili and
+  Rinnegatamante) all come from there. The PSVita port is the closest relative of the PSP one; its
+  running and building instructions are kept further down in this README.
+* [RedPandaProjects/UnrealEngine](https://github.com/RedPandaProjects/UnrealEngine) maintains the
+  same 1998 v200 source on GitHub for Windows, with the aim of fixing bugs and improving the code
+  while keeping the vanilla game intact. Useful as a readable reference for the original engine.
+
 ## Changes from original source
 
 * Added SDL2 windowing/client driver (NSDLDrv).
