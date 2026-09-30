@@ -54,8 +54,12 @@ fragment the heap. See the comments at the top of `Source/NOpenALDrv/PspMix.h`,
    another name from the start, and `UNREAL_ASSETS=<dir>` takes the data from another folder, so two
    data sets can sit side by side. The same command with
    `~/.config/ppsspp/PSP/GAME` (or wherever your emulator keeps its games) makes a PPSSPP install;
-   set `MusicME=0` in the `[PSP]` section of that copy's `System/Unreal.ini`, because the emulator
-   has no Media Engine and the game would hang at the first song.
+   set `MusicME=0` in the `[PSP]` section of that copy's `System/Unreal.ini`. PPSSPP implements the
+   Media Engine's stock firmware services (the video and audio decoders retail games use) but not
+   the ME as a second CPU that can run custom code, which is how this port mixes sound and music.
+   With the option on, the bridge module's first kernel call fails in the emulator and the game
+   waits forever for the ME. `MusicME=0` mixes everything on the main CPU instead; leave it at the
+   default on a real PSP, or the mixing costs frame rate there.
 4. On the PSP, launch **Unreal** from the Game menu of the XMB.
 
 Saving works from the in-game menu (the save files go to `PSP/GAME/Unreal/Save/`). The game runs at
