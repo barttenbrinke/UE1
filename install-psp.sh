@@ -16,6 +16,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASSETS="${UNREAL_ASSETS:-$HERE/GAME_ASSETS}"   # override with UNREAL_ASSETS=<dir> (e.g. a Gold data set)
+# In-place sed: GNU sed takes -i alone, BSD/macOS sed needs an empty suffix.
+if sed --version >/dev/null 2>&1; then sedi() { sed -i "$@"; }; else sedi() { sed -i '' "$@"; }; fi
+
 # A fresh build wins; otherwise the prebuilt EBOOT committed at the repo root.
 EBOOT="$HERE/build-psp/Unreal/EBOOT.PBP"
 [[ -f "$EBOOT" ]] || EBOOT="$HERE/EBOOT.PBP"
@@ -71,7 +74,7 @@ find "$DEST/System" \( -iname '*.dll' -o -iname '*.exe' \) -delete
 # The "=" anchors matter: without them these also rewrite the [section] headers,
 # leaving two [NOpenGLDrv.NOpenGLRenderDevice] blocks with the GLES driver's
 # settings (UseVAO, UseBGRA) masquerading as the GL driver's.
-sed -i '' \
+sedi \
   -e 's|=NOpenGLESDrv\.NOpenGLESRenderDevice|=NOpenGLDrv.NOpenGLRenderDevice|g' \
   -e 's|^ViewportX=.*|ViewportX=480|' \
   -e 's|^ViewportY=.*|ViewportY=272|' \
@@ -127,7 +130,7 @@ fi
 # SDL's PSP pad: Joy1=Cross Joy2=Circle Joy3=Square Joy4=Triangle Joy5=Select
 # Joy7=Start Joy10=L Joy11=R, JoyX/JoyY=stick, JoyPov*=D-pad. While Select is
 # held the driver reports the D-pad as Joy14/Joy6/Joy15/Joy16 (up/down/left/right).
-sed -i '' \
+sedi \
   -e 's|^Joy1=.*|Joy1=LookDown|' \
   -e 's|^Joy2=.*|Joy2=TurnRight|' \
   -e 's|^Joy3=.*|Joy3=TurnLeft|' \
@@ -150,9 +153,9 @@ sed -i '' \
   -e 's|^Joy16=.*|Joy16=InventoryNext|' \
   "$DEST/System/Unreal.ini"
 # The nub drifts a little at rest: a 20% dead zone.
-sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^DeadZoneXYZ=.*|DeadZoneXYZ=0.2|' "$DEST/System/Unreal.ini"
+sedi '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^DeadZoneXYZ=.*|DeadZoneXYZ=0.2|' "$DEST/System/Unreal.ini"
 # Curved surfaces subdivide and re-light every close mesh triangle on the CPU: 25 ms/frame with four bots in view on the PSP
-sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^CurvedSurfaces=.*|CurvedSurfaces=False|' "$DEST/System/Unreal.ini"
+sedi '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^CurvedSurfaces=.*|CurvedSurfaces=False|' "$DEST/System/Unreal.ini"
 
 # macOS writes a 4KB "._name" AppleDouble beside every file written to a
 # FAT/exFAT volume, and the PSP lists those as "Corrupted Data". rsync creates
@@ -161,7 +164,7 @@ sed -i '' '/^\[NSDLDrv.NSDLClient\]/,/^\[/ s|^CurvedSurfaces=.*|CurvedSurfaces=F
 # sits on a /dev/disk mount that is not "/", and dot_clean would crawl all
 # of it.
 DEV=$(df -P "$DEST" | awk 'NR==2 {print $1}')
-if mount | grep -qE "^$DEV on .* \((msdos|exfat)"; then
+if command -v dot_clean >/dev/null && mount | grep -qE "^$DEV on .* \((msdos|exfat)"; then
   VOL=$(df -P "$DEST" | awk 'NR==2 {print $6}')
   if [ "$VOL" != "/" ]; then
     echo "==> removing macOS sidecars from $VOL"

@@ -11,8 +11,10 @@ has not, which is where you come in. It is a fork of [fgsfdsfgs/UE1](https://git
 ## Install
 
 You need a PSP-2000, 3000, Go or Street with custom firmware that runs homebrew (PRO, ME or ARK), a
-Memory Stick with 700 MB free, and a Mac or Linux machine. A Mac has everything the scripts use out
-of the box; on Linux install `curl`, `rsync` and `p7zip` (or `libarchive-tools` for `bsdtar`).
+Memory Stick with 700 MB free, and a computer to run two shell scripts on. A Mac has everything they
+use out of the box. On Linux install `curl`, `rsync` and `libarchive-tools` (or `p7zip`). On Windows
+use [WSL](https://learn.microsoft.com/windows/wsl/install) with Ubuntu, install the same three
+packages there, and the stick shows up as `/mnt/<drive letter>/PSP/GAME`.
 
 ```
 git clone https://github.com/barttenbrinke/UE1.git && cd UE1
