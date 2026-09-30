@@ -11,7 +11,8 @@ has not, which is where you come in. It is a fork of [fgsfdsfgs/UE1](https://git
 ## Install
 
 You need a PSP-2000, 3000, Go or Street with custom firmware that runs homebrew (PRO, ME or ARK), a
-Memory Stick with 700 MB free, and a Mac or Linux machine with `curl`, `rsync` and `7z` or `bsdtar`.
+Memory Stick with 700 MB free, and a Mac or Linux machine. A Mac has everything the scripts use out
+of the box; on Linux install `curl`, `rsync` and `p7zip` (or `libarchive-tools` for `bsdtar`).
 
 ```
 git clone https://github.com/barttenbrinke/UE1.git && cd UE1
