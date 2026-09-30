@@ -59,7 +59,10 @@ fragment the heap. See the comments at the top of `Source/NOpenALDrv/PspMix.h`,
    the ME as a second CPU that can run custom code, which is how this port mixes sound and music.
    With the option on, the bridge module's first kernel call fails in the emulator and the game
    waits forever for the ME. `MusicME=0` mixes everything on the main CPU instead; leave it at the
-   default on a real PSP, or the mixing costs frame rate there.
+   default on a real PSP, or the mixing costs frame rate there. This is changing: PPSSPP pull
+   request [#21554](https://github.com/hrydgard/ppsspp/pull/21554) (open since April 2026) adds a
+   low-level emulation of the ME for homebrew, validated against the same me-core samples this port
+   builds on. Once it ships, the option can stay on in the emulator too.
 4. On the PSP, launch **Unreal** from the Game menu of the XMB.
 
 Saving works from the in-game menu (the save files go to `PSP/GAME/Unreal/Save/`). The game runs at
