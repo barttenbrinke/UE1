@@ -16,10 +16,12 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASSETS="${UNREAL_ASSETS:-$HERE/GAME_ASSETS}"   # override with UNREAL_ASSETS=<dir> (e.g. a Gold data set)
+# A fresh build wins; otherwise the prebuilt EBOOT committed at the repo root.
 EBOOT="$HERE/build-psp/Unreal/EBOOT.PBP"
+[[ -f "$EBOOT" ]] || EBOOT="$HERE/EBOOT.PBP"
 DEST="${1:?usage: install-psp.sh <dest-PSP/GAME-dir>}/${UNREAL_DIRNAME:-Unreal}"   # UNREAL_DIRNAME=<name> installs beside an existing copy
 
-[[ -f "$EBOOT"   ]] || { echo "error: EBOOT not built: $EBOOT" >&2; exit 1; }
+[[ -f "$EBOOT"   ]] || { echo "error: no EBOOT.PBP found (run ./build-psp.sh or restore the committed one)" >&2; exit 1; }
 [[ -d "$ASSETS/System" ]] || { echo "error: no game assets at $ASSETS" >&2; exit 1; }
 
 echo "==> installing to $DEST"

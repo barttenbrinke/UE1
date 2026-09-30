@@ -13,65 +13,30 @@ thing you can send. [What it does](#what-it-does) explains what was changed to m
 
 ## Getting it running
 
-You need a PSP-2000, 3000, Go or Street with custom firmware that can run homebrew EBOOTs (PRO, ME
-or ARK all work), a Memory Stick with about 700 MB free, and a computer with `bash`, `curl`,
-`rsync` and `7z` (or `bsdtar`) for the assembly step.
-
-### 1. Get the game data
-
-The game's data files are not in this repository and never will be. Run
+You need a PSP-2000, 3000, Go or Street with custom firmware that runs homebrew (PRO, ME or ARK), a
+Memory Stick with 700 MB free, and a Mac or Linux machine with `curl`, `rsync` and `7z` or `bsdtar`.
 
 ```
-./fetch-assets.sh
+git clone https://github.com/barttenbrinke/UE1.git && cd UE1
+./fetch-assets.sh                              # downloads the game data (~780 MB), asks you to accept Epic's terms
+./install-psp.sh /Volumes/<your stick>/PSP/GAME  # copies the EBOOT, the data and the settings to the stick
 ```
 
-It downloads the game data from two freely available archives (the Unreal Gold disc image that
+Then launch **Unreal** from the Game menu of the XMB. Press Start for the menu; saves go to
+`PSP/GAME/Unreal/Save/`.
+
+The game data comes from two freely available archives: the Unreal Gold disc image that
 [OldUnreal](https://www.oldunreal.com) hosts with Epic Games' permission, and the 1998 Unreal demo
-from archive.org), verifies them and unpacks what the port needs into `GAME_ASSETS/` next to this
-README. You are asked to accept the Epic Games Terms of Service, as OldUnreal's installer does.
-About 780 MB is downloaded; 600 MB stays. The script resumes an interrupted download. The header of
-`fetch-assets.sh` explains which files come from where and why.
+on archive.org. If you own the original 1998 CD, copy its `System`, `Maps`, `Textures`, `Sounds` and
+`Music` folders into `GAME_ASSETS/` instead of running the fetch script. `EBOOT.PBP` at the root of
+the repository is the current build; [Building](#building) says how to make your own, and the
+installer prefers a fresh build when it finds one.
 
-If you own the original 1998 CD you can skip the download: copy its `System`, `Maps`, `Textures`,
-`Sounds` and `Music` folders into `GAME_ASSETS/` yourself (about 370 MB).
-
-### 2. Get an EBOOT
-
-Build it yourself as described under [Building](#building), or take `EBOOT.PBP` from the Releases
-page once there is one.
-
-### 3. Install to the Memory Stick
-
-With the stick mounted:
-
-```
-./install-psp.sh /Volumes/<your stick>/PSP/GAME
-```
-
-This creates `PSP/GAME/Unreal/` with the EBOOT, the game data and the port's configuration, and on
-macOS removes the `._` sidecar files the Finder writes, which the PSP would list as corrupted data.
-The folder may be renamed afterwards; the game finds its data next to the EBOOT.
-`UNREAL_DIRNAME=<name>` installs under another name and `UNREAL_ASSETS=<dir>` takes the data from
-another folder, so two installs can sit side by side.
-
-### 4. Play
-
-Launch **Unreal** from the Game menu of the XMB. The intro flyby starts; press Start for the menu
-and start a new game or load a save. Saves go to `PSP/GAME/Unreal/Save/`.
-
-### The emulator
-
-The same install command with `~/.config/ppsspp/PSP/GAME` (or wherever PPSSPP keeps its games)
-makes an emulator install. Set `MusicME=0` in the `[PSP]` section of that copy's
-`System/Unreal.ini` first. PPSSPP implements the Media Engine's stock firmware services (the video
-and audio decoders retail games use) but not the ME as a second CPU running custom code, which is
-how this port mixes sound; with the option on, the game waits for the ME forever. `MusicME=0` mixes
-on the main CPU instead. Leave it at the default on a real PSP, where that mixing costs frame rate.
-PPSSPP pull request [#21554](https://github.com/hrydgard/ppsspp/pull/21554) adds a low-level
-emulation of the ME for homebrew; once it ships, the option can stay on in the emulator too.
-
-The emulator is good for checking logic and memory. It is several times faster than a PSP, so it
-says nothing about frame rate.
+For PPSSPP, install to `~/.config/ppsspp/PSP/GAME` (or wherever the emulator keeps its games) and
+set `MusicME=0` in the `[PSP]` section of that copy's `System/Unreal.ini`: the emulator does not run
+custom code on the Media Engine, where this port mixes sound, until PPSSPP pull request
+[#21554](https://github.com/hrydgard/ppsspp/pull/21554) ships. The emulator is fine for checking
+logic, useless for judging frame rate.
 
 ## Controls
 
