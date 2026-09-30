@@ -1,5 +1,7 @@
 # Unreal (1998) on the PSP
 
+![Unreal running on a PSP](docs/psp.jpg)
+
 A port of the original *Unreal* to the PSP-2000 and later models: the single-player campaign and the
 deathmatch maps, on the console, from a homebrew EBOOT. It is playable and still being worked on.
 The first levels run at 20 to 30 fps and have been played through on hardware; the rest of the game
