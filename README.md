@@ -1,104 +1,177 @@
-## What?
+# Unreal (1998) for the Sony PSP
 
-Unreal Engine 1 v200 source with modifications to make it run on modern systems.  
-Requires assets from the original Unreal v200 retail release or from the v205 demo. Other versions have not been tested. For the PSP port, `fetch-assets.sh` assembles a compatible set from freely downloadable archives (see below).
+A port of the original *Unreal* to the PSP-2000 and later models. The full single-player campaign
+and the deathmatch maps of the 1998 game run on the console from a homebrew EBOOT, using the game's
+own data files. It is a fork of [fgsfdsfgs/UE1](https://github.com/fgsfdsfgs/UE1), the community
+build of the Unreal Engine 1 v200 source that already ran on Windows, Linux and the PSVita.
 
-## Related projects
+The port is playable but still a work in progress. The point of putting it on GitHub now is to get
+it played: the first levels have been tested on hardware many times, the rest of the campaign and
+the deathmatch maps far less. If you have a PSP, please play and report back; the section
+[Help testing](#help-testing) says how, and a save game attached to an issue is the most useful
+thing you can send.
 
-* [fgsfdsfgs/UE1](https://github.com/fgsfdsfgs/UE1) is the upstream of this fork: the SDL2, OpenGL
-  and OpenAL drivers, GCC support and the Windows, Linux and **PSVita** ports (by fgsfds, BSzili and
-  Rinnegatamante) all come from there. The PSVita port is the closest relative of the PSP one; its
-  running and building instructions are kept further down in this README.
-* [RedPandaProjects/UnrealEngine](https://github.com/RedPandaProjects/UnrealEngine) maintains the
-  same 1998 v200 source on GitHub for Windows, with the aim of fixing bugs and improving the code
-  while keeping the vanilla game intact. Useful as a readable reference for the original engine.
+## What it does
 
-## Changes from original source
+The engine is the 1998 code, compiled for the PSP's MIPS CPU, with the parts rewritten that the
+console could not carry:
 
-* Added SDL2 windowing/client driver (NSDLDrv).
-* Added GLES2 and fixed pipeline GL graphics drivers (NOpenGLESDrv and NOpenGLDrv).
-* Added OpenAL + libxmp audio driver (NOpenALDrv).
-* Added GCC support and fixed a bunch of related bugs.
-* Supported platforms: Windows (x86), Linux (x86, ARM32), PSVita (ARM32) and **PSP** (MIPS, this fork).
-* Editor UI is not supported.
+* **Streaming instead of resident data.** Textures, sounds and mesh geometry are read from the
+  Memory Stick on first use and dropped again under memory pressure. A level that took 60 MB on a
+  PC fits in the 40 MB the PSP-2000 leaves to a game.
+* **Sound on the second CPU.** Sound effects are mixed and the tracker music is played on the
+  Media Engine, the PSP's second MIPS core, through mcidclan's me-core library. The game CPU only
+  hands over the voices.
+* **Lighting folded into vertex colours.** The BSP lightmaps are baked into the geometry pass, one
+  draw instead of two, with a gamma curve tuned for the PSP's LCD.
+* **A fixed region for large allocations** so that level changes do not fragment the heap, and a
+  loader tuned for the Memory Stick's slow seeks.
 
-## PSP port
+`PSP-TODO.md` is the engineering log of what was measured and changed, in detail, and the comments
+at the top of `Source/NOpenALDrv/PspMix.h`, `Source/Core/Src/UnFile.cpp` and
+`Source/NOpenGLDrv/NOpenGLDrv.cpp` explain the three big pieces.
 
-This fork adds a port to the Sony PSP. It runs the full single-player game on a PSP-2000 or later
-(64 MB of RAM is required; the PSP-1000's 32 MB is not enough) with custom firmware that can run
-homebrew EBOOTs (PRO, ME, ARK). It is a work in progress: the first levels are playable at roughly
-20-30 fps, level loads take 8-20 seconds from the Memory Stick, and `PSP-TODO.md` is the running
-engineering log of what was done and what is still open. Controls are described in
-`PSP-CONTROLS.txt`.
+## What works, and what is known not to
 
-What the port does differently from the other platforms, in short: textures, sounds and mesh data
-are streamed from the Memory Stick on first use instead of being kept in memory; sound effects are
-mixed by the PSP's second CPU, the Media Engine, which also plays the tracker music; BSP lighting is
-folded into vertex colours; large allocations live in their own region so level changes do not
-fragment the heap. See the comments at the top of `Source/NOpenALDrv/PspMix.h`,
-`Source/Core/Src/UnFile.cpp` and `Source/NOpenGLDrv/NOpenGLDrv.cpp` for the details.
+Confirmed on a PSP-2000 with custom firmware:
 
-### Running on a PSP
+* The intro flyby, the Vortex Rikers and the following levels load and play; the first level has
+  been completed on the console and the second loads after it.
+* Saving from the menu and loading a save, including from inside a running level.
+* Sound effects, music, the translator, weapons, inventory.
+* Frame rate of about 20 to 30 fps in the early levels, dropping to 11 to 13 fps in the heaviest
+  castle views. Level loads take 8 to 20 seconds from the Memory Stick.
+* Clean exit to the XMB from the menu.
 
-1. Get the game data into `GAME_ASSETS/` next to this README. Either:
-   - run `./fetch-assets.sh`. It downloads two freely available archives, checks them against known
-     checksums and unpacks the right folders: the maps, textures, sounds and music come from the
-     Unreal Gold disc image that OldUnreal hosts with Epic Games' permission (you are asked to accept
-     the Epic Games Terms of Service, as their installer does), and the code packages in `System/`
-     come from the 1998 *Unreal Special Edition* demo preserved on archive.org. Both parts are
-     byte-identical to the original v200 release, which is what this engine was built from. Unreal
-     Gold's own `System/*.u` are the later v226 code and cannot be loaded by this engine, so they
-     are not used. About 780 MB is downloaded and 600 MB kept.
-   - or, if you own the original 1998 CD, copy its `System`, `Maps`, `Textures`, `Sounds` and
-     `Music` folders into `GAME_ASSETS/` yourself (about 370 MB).
+Known limits and open questions:
 
-   `GAME_ASSETS/` is ignored by git; never commit it.
-2. Build the EBOOT (below) or take `EBOOT.PBP` from a release.
-3. Assemble the install. With the Memory Stick mounted:
-   ```
-   ./install-psp.sh /Volumes/<your stick>/PSP/GAME
-   ```
-   This creates `PSP/GAME/Unreal/` with the EBOOT, the game data, the port's configuration files
-   and the PSP-specific settings appended to `System/Unreal.ini`. The folder may be renamed or moved
-   afterwards (the game finds its data next to the EBOOT); `UNREAL_DIRNAME=<name>` installs under
-   another name from the start, and `UNREAL_ASSETS=<dir>` takes the data from another folder, so two
-   data sets can sit side by side. The same command with
-   `~/.config/ppsspp/PSP/GAME` (or wherever your emulator keeps its games) makes a PPSSPP install;
-   set `MusicME=0` in the `[PSP]` section of that copy's `System/Unreal.ini`. PPSSPP implements the
-   Media Engine's stock firmware services (the video and audio decoders retail games use) but not
-   the ME as a second CPU that can run custom code, which is how this port mixes sound and music.
-   With the option on, the bridge module's first kernel call fails in the emulator and the game
-   waits forever for the ME. `MusicME=0` mixes everything on the main CPU instead; leave it at the
-   default on a real PSP, or the mixing costs frame rate there. This is changing: PPSSPP pull
-   request [#21554](https://github.com/hrydgard/ppsspp/pull/21554) (open since April 2026) adds a
-   low-level emulation of the ME for homebrew, validated against the same me-core samples this port
-   builds on. Once it ships, the option can stay on in the emulator too.
-4. On the PSP, launch **Unreal** from the Game menu of the XMB.
+* **Later levels were only swept in the emulator** for memory use, not played on hardware.
+* **Deathmatch runs** (bots included) and has been used for performance testing, but has hardly
+  been played.
+* **Suspending the PSP mid-game** with the power switch, and hub levels with several saves, are
+  untested.
+* **Scripted sequences with many actors** (the collapsing floor in Vortex Rikers, for example) still
+  dip in frame rate, though far less than they did.
+* The PSP-1000 with 32 MB of RAM is **not** supported; the game does not fit.
+* Music volume against effects volume has not been balanced yet.
 
-Saving works from the in-game menu (the save files go to `PSP/GAME/Unreal/Save/`). The game runs at
-333 MHz. Suspending the PSP mid-game with the power switch is untested.
+## Getting it running
 
-### Controls
+You need a PSP-2000, 3000, Go or Street with custom firmware that can run homebrew EBOOTs (PRO, ME
+or ARK all work), a Memory Stick with about 700 MB free, and a computer with `bash`, `curl`,
+`rsync` and `7z` (or `bsdtar`) for the assembly step.
 
-The PSP has one analog stick, so the layout follows the usual PSP shooter convention: the stick
-moves, the face buttons look, the triggers fire. Everything is an ordinary binding in the
-`[Engine.Input]` section of `System/Unreal.ini`, so it can be changed; `PSP-CONTROLS.txt` has the
-full list, the button numbering and an alternative layout.
+### 1. Get the game data
 
-| | |
+The game's data files are not in this repository and never will be. Put them in `GAME_ASSETS/`
+next to this README, in one of two ways:
+
+* Run `./fetch-assets.sh`. It downloads two freely available archives, verifies them against known
+  checksums and unpacks the right folders. The maps, textures, sounds and music come from the
+  Unreal Gold disc image that [OldUnreal](https://www.oldunreal.com) hosts with Epic Games'
+  permission (the script asks you to accept the Epic Games Terms of Service, as their installer
+  does). The code packages in `System/` come from the 1998 *Unreal Special Edition* demo preserved
+  on archive.org, because Unreal Gold's own code packages are the later v226 version that this v200
+  engine cannot load. Both parts are byte-identical to the original 1998 release. About 780 MB is
+  downloaded; 600 MB stays. archive.org is slow at times; the script resumes an interrupted
+  download.
+* Or, if you own the original 1998 CD, copy its `System`, `Maps`, `Textures`, `Sounds` and `Music`
+  folders into `GAME_ASSETS/` yourself (about 370 MB).
+
+### 2. Get an EBOOT
+
+Build it yourself as described under [Building](#building), or take `EBOOT.PBP` from the Releases
+page once there is one.
+
+### 3. Install to the Memory Stick
+
+With the stick mounted:
+
+```
+./install-psp.sh /Volumes/<your stick>/PSP/GAME
+```
+
+This creates `PSP/GAME/Unreal/` with the EBOOT, the game data and the port's configuration, and on
+macOS removes the `._` sidecar files the Finder writes, which the PSP would list as corrupted data.
+The folder may be renamed afterwards; the game finds its data next to the EBOOT.
+`UNREAL_DIRNAME=<name>` installs under another name and `UNREAL_ASSETS=<dir>` takes the data from
+another folder, so two installs can sit side by side.
+
+### 4. Play
+
+Launch **Unreal** from the Game menu of the XMB. The intro flyby starts; press Start for the menu
+and start a new game or load a save. Saves go to `PSP/GAME/Unreal/Save/`.
+
+### The emulator
+
+The same install command with `~/.config/ppsspp/PSP/GAME` (or wherever PPSSPP keeps its games)
+makes an emulator install. Set `MusicME=0` in the `[PSP]` section of that copy's
+`System/Unreal.ini` first. PPSSPP implements the Media Engine's stock firmware services (the video
+and audio decoders retail games use) but not the ME as a second CPU running custom code, which is
+how this port mixes sound; with the option on, the game waits for the ME forever. `MusicME=0` mixes
+on the main CPU instead. Leave it at the default on a real PSP, where that mixing costs frame rate.
+PPSSPP pull request [#21554](https://github.com/hrydgard/ppsspp/pull/21554) adds a low-level
+emulation of the ME for homebrew; once it ships, the option can stay on in the emulator too.
+
+The emulator is good for checking logic and memory. It is several times faster than a PSP, so it
+says nothing about frame rate.
+
+## Controls
+
+The PSP has one analog stick and no second one to aim with, so the layout is the one PSP shooters
+settled on, and it will feel familiar if you played PlayStation-era games such as *Tomb Raider*
+before twin sticks existed: the left hand moves, the right hand turns and looks with the four face
+buttons, and the shoulder buttons fire.
+
+| Input | Action |
 |---|---|
-| Analog stick | move forward/back, strafe |
-| Triangle / Cross | look up / down |
-| Square / Circle | turn left / right |
-| R / L | fire / alt-fire |
-| D-pad up / down | jump / duck |
+| Analog stick | move forward and back, strafe left and right |
+| Triangle / Cross | look up / look down |
+| Square / Circle | turn left / turn right |
+| R / L | fire / alternate fire |
+| D-pad up / down | jump / crouch |
 | D-pad left / right | previous / next weapon |
 | Start | menu (also confirms in menus) |
 | Select | translator |
-| Select + D-pad up | use the selected inventory item |
+| Select + D-pad up | use the selected inventory item (flashlight, jump boots, seeds, health) |
 | Select + D-pad left / right | previous / next inventory item |
 
-### Building for PSP
+Unreal has no "use" key: doors, lifts and switches trigger when touched or shot. Select doubles as a
+shift key for the inventory because no button was left for it; a quick tap of Select on its own
+still opens the translator.
+
+Every binding is an ordinary entry in the `[Engine.Input]` section of `System/Unreal.ini`, so the
+layout can be changed with a text editor. `PSP-CONTROLS.txt` has the button numbering, the turn and
+look speeds, and a reverse layout where the face buttons move and the stick looks, for those who
+prefer it.
+
+## Help testing
+
+Two things need players more than they need programmers right now:
+
+* **The single-player campaign, start to finish.** Only the first levels have had real play time on
+  hardware. Play as far as you get. Note where the frame rate drops badly, where a level fails to
+  load, where a sound loops or is missing, and where anything looks wrong.
+* **Deathmatch against bots.** Start a deathmatch from the menu on any of the `Dm` maps, with a few
+  bots. This stresses the mesh pipeline and the mixer in ways the campaign does not.
+
+When you hit a problem, open an issue with:
+
+1. What happened and where (level name, and what you were doing).
+2. **The save game.** Save just before the problem if you can, then copy from the stick
+   `PSP/GAME/Unreal/Save/Save<slot>.usa` (and any other files in that folder for the same slot; hub
+   levels write several) and attach it, zipped. A save is small and lets the problem be replayed
+   exactly: the port can load a slot and walk forward automatically while the log is watched over
+   PSPLink, so a save that reproduces a bug is worth more than any description.
+3. `PSP/GAME/Unreal/System/Unreal.log` from the stick, taken right after the problem (the file is
+   rewritten at every launch).
+4. Your PSP model and firmware, and which EBOOT you ran (the release name, or the commit if you
+   built it).
+
+Performance observations without a crash are welcome too: the level and spot, and roughly what the
+game did (slideshow, hitching, fine).
+
+## Building
 
 1. Install the [pspdev toolchain](https://github.com/pspdev/pspdev) (a release archive or the
    build script), set `PSPDEV` to its location and put `$PSPDEV/bin` on your `PATH`. The toolchain
@@ -125,13 +198,29 @@ full list, the button numbering and an alternative layout.
 The PSPLink build mirrors the log to `pspsh` and keeps the engine's cycle counters, so every frame
 can be broken down on the hardware. `tools/psp/README.md` describes the scripts used for that:
 running the PRX from the host over USB, pushing a build to the card, pulling a save game off it to
-replay a problem, and the command-line switches that replay a save and walk forward, checksum the
-frame, or quit on a timer. The emulator is good for logic and memory but not for speed: it is several
-times faster than a PSP and capped at 20 fps here.
+replay a problem, and the command-line switches that load a save and walk forward, checksum the
+frame, or quit on a timer.
 
-## Running
+## Related projects
 
-### Linux and Windows
+* [fgsfdsfgs/UE1](https://github.com/fgsfdsfgs/UE1) is the upstream of this fork: the SDL2, OpenGL
+  and OpenAL drivers, GCC support and the Windows, Linux and **PSVita** ports (by fgsfds, BSzili and
+  Rinnegatamante) all come from there. The PSVita port is the closest relative of the PSP one; its
+  instructions are kept below.
+* [RedPandaProjects/UnrealEngine](https://github.com/RedPandaProjects/UnrealEngine) maintains the
+  same 1998 v200 source on GitHub for Windows, with the aim of fixing bugs and improving the code
+  while keeping the vanilla game intact. Useful as a readable reference for the original engine.
+* [OldUnreal](https://www.oldunreal.com) maintains the modern patches for Unreal Gold and hosts the
+  disc image that `fetch-assets.sh` downloads.
+
+## Other platforms (from upstream)
+
+The changes upstream made to the original source apply to every platform: an SDL2 windowing and
+input driver (NSDLDrv), GLES2 and fixed-pipeline OpenGL renderers (NOpenGLESDrv and NOpenGLDrv), an
+OpenAL plus libxmp audio driver (NOpenALDrv), GCC support and many related bug fixes. The editor UI
+is not supported. These builds need the original retail v200 release of Unreal or the v205 demo.
+
+### Running on Linux and Windows
 1. Install the original retail v200 release of Unreal or the v205 demo.
 2. Copy over the new files:
    * If you downloaded a ZIP from the Releases section:
@@ -141,7 +230,7 @@ times faster than a PSP and capped at 20 fps here.
      2. Copy the contents of `Engine/Config` to `Unreal/System`. Overwrite everything.
 3. Run `System/Unreal.exe`.
 
-### PSVita
+### Running on the PSVita
 1. Ensure you have libshacccg installed.
 2. Install the original retail v200 release of Unreal or the v205 demo onto your PC.
 3. Copy the contents of the `Unreal` folder to `ux0:/data/unreal/` on your PSVita.
@@ -149,9 +238,7 @@ times faster than a PSP and capped at 20 fps here.
 5. Install `unreal.vpk` from `unreal-arm-psvita-gcc.zip`.
 6. Run Unreal.
 
-## Building
-
-### Windows x86 (MSYS2/MinGW)
+### Building for Windows x86 (MSYS2/MinGW)
 1. Install MSYS2.
 2. Open the `MINGW32` prompt. **Do not** use the `MINGW64` or `MSYS` prompts.
 3. Install dependencies: `pacman -S git make mingw-w64-i686-toolchain mingw-w64-i686-cmake mingw-w64-i686-SDL2 mingw-w64-i686-openal mingw-w64-i686-libxmp`
@@ -162,7 +249,7 @@ times faster than a PSP and capped at 20 fps here.
    ```
 5. The resulting files will be in `build/RelWithDebInfo` by default.
 
-### Windows x86 (Visual Studio)
+### Building for Windows x86 (Visual Studio)
 1. Install VS2019 or VS2022. Dependencies are included in the repo.
 2. Build:
    ```
@@ -171,7 +258,7 @@ times faster than a PSP and capped at 20 fps here.
    ```
 3. The resulting files will be in `build/RelWithDebInfo` by default.
 
-### Linux x86
+### Building for Linux x86
 1. Install git, make, cmake, gcc, g++, sdl2, libopenal, libxmp.
    * If cross-compiling from x86_64, also install 32-bit versions of the libraries and gcc-multilib/g++-multilib.
    * On Debian x86_64 this process looks something like this:
@@ -189,7 +276,7 @@ times faster than a PSP and capped at 20 fps here.
    ```
 3. The resulting files will be in `build/RelWithDebInfo` by default.
 
-### Linux ARM
+### Building for Linux ARM
 1. Install git, make, cmake, gcc, g++, sdl2, libopenal, libxmp.
    * If cross-compiling from ARM64, also install armhf versions of the libraries and arm-linux-gnueabihf-gcc/g++.
    * On Debian x86_64 or ARM64 this process looks something like this:
@@ -206,7 +293,7 @@ times faster than a PSP and capped at 20 fps here.
    ```
 3. The resulting files will be in `build/RelWithDebInfo` by default.
 
-### PSVita (on Linux or WSL)
+### Building for the PSVita (on Linux or WSL)
 1. Install VitaSDK with all VDPM packages and ensure the `VITASDK` environment variable is set and `$VITASDK/bin` is in your `PATH`.
 2. Build and install vitaGL:
    ```
@@ -231,6 +318,7 @@ times faster than a PSP and capped at 20 fps here.
 
 ## Note
 
-Unreal Engine, Unreal and any related trademarks or copyrights are owned by Epic Games. This repository is not affiliated with or endorsed by Epic Games. 
-This is based on the v200 source available elsewhere on the Internet, with assets and third party proprietary libraries removed. 
-Do not use for commercial purposes.
+Unreal Engine, Unreal and any related trademarks or copyrights are owned by Epic Games. This
+repository is not affiliated with or endorsed by Epic Games. It is based on the v200 source
+available elsewhere on the Internet, with assets and third party proprietary libraries removed. Do
+not use for commercial purposes.
