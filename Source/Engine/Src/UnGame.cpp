@@ -455,6 +455,13 @@ UBOOL UGameEngine::Browse( FURL URL, char* Error256 )
 	{
 		// Network URL.
 		guard(NetworkURL);
+#ifdef __PSP__
+		// No network driver in this build: UPendingLevel would load it with
+		// LOAD_NoFail and die. Tell the player instead (the menu's JOIN GAME).
+		SetProgress( "Networking Failed", "No network play in this PSP build", 6.0 );
+		debugf( NAME_Log, "PSP: refusing network URL unreal://%s/%s (no network driver)", *URL.Host, *URL.Map );
+		return 0;
+#endif
 		if( GPendingLevel )
 			CancelPending();
 		char Msg1[256], Msg2[256];
@@ -966,7 +973,17 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, char* Err
 
 	// Listen for clients.
 	guard(Listen);
+#ifdef __PSP__
+	// No network driver in this build (BUILD_IPDRV=OFF): the menu's BOTMATCH
+	// and START GAME entries travel with ?Listen, and loading the listen
+	// driver would be a fatal error. Bots are local actors and need no
+	// server, so play the game standalone instead.
+	if( URL.HasOption("Listen") )
+		debugf( NAME_Log, "PSP: ignoring ?Listen (no network driver), running standalone" );
+	if( !Client )
+#else
 	if( !Client || URL.HasOption("Listen") )
+#endif
 	{
 		char Error256[256];
 		if( !GLevel->Listen( Error256 ) )

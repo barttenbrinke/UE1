@@ -44,6 +44,9 @@ Known limits and open questions:
   untested.
 * **Scripted sequences with many actors** (the collapsing floor in Vortex Rikers, for example) still
   dip in frame rate, though far less than they did.
+* **No network play.** The build has no network driver (`BUILD_IPDRV=OFF`). BOTMATCH and START
+  GAME from the menu travel with `?Listen`; the PSP build ignores that option and runs the match
+  standalone with the bots. JOIN GAME shows "Networking Failed". Before this, both were fatal.
 * The PSP-1000 with 32 MB of RAM is **not** supported; the game does not fit.
 * Music volume against effects volume has not been balanced yet.
 
