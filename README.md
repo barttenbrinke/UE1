@@ -65,7 +65,7 @@ layout can be changed with a text editor. `PSP-CONTROLS.txt` has the button numb
 look speeds, and a reverse layout where the face buttons move and the stick looks, for those who
 prefer it.
 
-## Something is broken
+## I want to help debug
 
 What needs playing most:
 
@@ -74,6 +74,8 @@ What needs playing most:
   load, where a sound loops or is missing, and where anything looks wrong.
 * **Deathmatch against bots.** Start a deathmatch from the menu on any of the `Dm` maps, with a few
   bots. This stresses the mesh pipeline and the mixer in ways the campaign does not.
+
+## I found something broken!
 
 When something breaks (a crash, a level that will not load, a sound that loops forever, a slideshow),
 [open an issue](https://github.com/barttenbrinke/UE1/issues) with:
