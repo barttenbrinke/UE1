@@ -44,6 +44,22 @@ while [[ $# -gt 0 ]]; do
     *) echo "usage: fetch-assets.sh [--keep] [--dest <dir>]" >&2; exit 2 ;;
   esac
 done
+# ia_sources <item> <file>: the URLs for a file on archive.org. The canonical
+# archive.org/download/ link redirects to a cache node, and those nodes answer
+# 500 for hours at a time while the item's own storage servers (d1/d2 in the
+# metadata API) serve it fine, so try the storage servers first.
+ia_sources() {
+  local meta d1 d2 dir h
+  meta="$(curl -sS --max-time 20 "https://archive.org/metadata/$1" 2>/dev/null || true)"
+  d1="$(printf '%s' "$meta" | sed -n 's/.*"d1":"\([^"]*\)".*/\1/p')"
+  d2="$(printf '%s' "$meta" | sed -n 's/.*"d2":"\([^"]*\)".*/\1/p')"
+  dir="$(printf '%s' "$meta" | sed -n 's/.*"dir":"\([^"]*\)".*/\1/p')"
+  if [[ -n "$dir" ]]; then
+    for h in $d1 $d2; do echo "https://$h$dir/$2"; done
+  fi
+  echo "https://archive.org/download/$1/$2"
+}
+
 ISO="$HERE/UNREAL_GOLD.ISO"
 ISO_SIZE=676734976
 ISO_SHA256=7e360d0cc9e5533f38859819fd3cbfea7c475ecd428f9f433b5f8e1d5742cbca
@@ -51,13 +67,13 @@ ISO_SOURCES=(
   https://files.oldunreal.net/UNREAL_GOLD.ISO
   https://files2.oldunreal.net/UNREAL_GOLD.ISO
   https://files3.oldunreal.net/UNREAL_GOLD.ISO
-  https://archive.org/download/totallyunreal/UNREAL_GOLD.ISO
+  "$(ia_sources totallyunreal UNREAL_GOLD.ISO)"
 )
 DEMO="$HERE/UnrealSpecialEdition.7z"
 DEMO_SIZE=128609961
 DEMO_SHA256=c158b030b39987aebbcbcd766b281b0b6020263a17b1989f8fd2c63a25a63855
 DEMO_SOURCES=(
-  https://archive.org/download/unreal-special-edition.-7z/UnrealSpecialEdition.7z
+  "$(ia_sources unreal-special-edition.-7z UnrealSpecialEdition.7z)"
 )
 
 if [[ -d "$ASSETS/System" ]]; then
@@ -132,8 +148,10 @@ take() {
   done
 }
 
-fetch "$ISO"  "$ISO_SIZE"  "$ISO_SHA256"  "${ISO_SOURCES[@]}"
-fetch "$DEMO" "$DEMO_SIZE" "$DEMO_SHA256" "${DEMO_SOURCES[@]}"
+# shellcheck disable=SC2046,SC2086
+fetch "$ISO"  "$ISO_SIZE"  "$ISO_SHA256"  $(printf '%s\n' "${ISO_SOURCES[@]}")
+# shellcheck disable=SC2046,SC2086
+fetch "$DEMO" "$DEMO_SIZE" "$DEMO_SHA256" $(printf '%s\n' "${DEMO_SOURCES[@]}")
 
 mkdir -p "$ASSETS"
 echo "==> unpacking Unreal Gold (Maps, Textures, Sounds, Music)"
