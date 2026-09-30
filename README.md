@@ -19,20 +19,23 @@ or ARK all work), a Memory Stick with about 700 MB free, and a computer with `ba
 
 ### 1. Get the game data
 
-The game's data files are not in this repository and never will be. Put them in `GAME_ASSETS/`
-next to this README, in one of two ways:
+The game's data files are not in this repository and never will be. Run
 
-* Run `./fetch-assets.sh`. It downloads two freely available archives, verifies them against known
-  checksums and unpacks the right folders. The maps, textures, sounds and music come from the
-  Unreal Gold disc image that [OldUnreal](https://www.oldunreal.com) hosts with Epic Games'
-  permission (the script asks you to accept the Epic Games Terms of Service, as their installer
-  does). The code packages in `System/` come from the 1998 *Unreal Special Edition* demo preserved
-  on archive.org, because Unreal Gold's own code packages are the later v226 version that this v200
-  engine cannot load. Both parts are byte-identical to the original 1998 release. About 780 MB is
-  downloaded; 600 MB stays. archive.org is slow at times; the script resumes an interrupted
-  download.
-* Or, if you own the original 1998 CD, copy its `System`, `Maps`, `Textures`, `Sounds` and `Music`
-  folders into `GAME_ASSETS/` yourself (about 370 MB).
+```
+./fetch-assets.sh
+```
+
+It downloads two freely available archives, verifies them against known checksums and unpacks the
+right folders into `GAME_ASSETS/` next to this README. The maps, textures, sounds and music come
+from the Unreal Gold disc image that [OldUnreal](https://www.oldunreal.com) hosts with Epic Games'
+permission (the script asks you to accept the Epic Games Terms of Service, as their installer does).
+The code packages in `System/` come from the 1998 *Unreal Special Edition* demo preserved on
+archive.org, because Unreal Gold's own code packages are the later v226 version that this v200
+engine cannot load. Both parts are byte-identical to the original 1998 release. About 780 MB is
+downloaded; 600 MB stays. archive.org is slow at times; the script resumes an interrupted download.
+
+If you own the original 1998 CD you can skip the download: copy its `System`, `Maps`, `Textures`,
+`Sounds` and `Music` folders into `GAME_ASSETS/` yourself (about 370 MB).
 
 ### 2. Get an EBOOT
 
